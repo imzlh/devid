@@ -1,0 +1,5 @@
+*.log
+*.lock
+pnpm-lock.yaml
+downloads/
+node_modules/

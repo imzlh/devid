@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VDown 视频管理器</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/artplayer@5/dist/artplayer.css">
+
+    <script src="https://cdn.jsdelivr.net/npm/artplayer@5/dist/artplayer.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest" defer></script>
+    <script src="utils.js" defer></script>
+    <script src="api.js" defer></script>
+    <script src="app.js" defer></script>
+</head>
+<body>
+    <!-- 左侧图标导航栏 -->
+    <nav class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <div class="logo">
+                <i class="fas fa-video"></i>
+            </div>
+        </div>
+        
+        <div class="nav-menu">
+            <div class="nav-item active" data-page="home" title="首页">
+                <i class="fas fa-home"></i>
+            </div>
+            <div class="nav-item" data-page="search" title="搜索">
+                <i class="fas fa-search"></i>
+            </div>
+            <div class="nav-item" data-page="downloads" title="下载">
+                <i class="fas fa-download"></i>
+                <span class="badge" id="downloadBadge">0</span>
+            </div>
+            <div class="nav-item" data-page="sources" title="视频源">
+                <i class="fas fa-globe"></i>
+            </div>
+        </div>
+        
+        <div class="sidebar-footer">
+            <div class="theme-toggle" id="themeToggle" title="切换主题">
+                <i class="fas fa-moon theme-icon"></i>
+            </div>
+        </div>
+    </nav>
+
+    <!-- 主内容区域 -->
+    <main class="main-content" id="mainContent">
+        <!-- 顶部搜索栏 -->
+        <header class="top-header">
+            <div class="search-container">
+                <div class="search-box">
+                    <input type="text" id="searchInput" placeholder="搜索视频...">
+                    <button id="searchBtn">
+                        <i class="fas fa-search"></i>
+                    </button>
+                </div>
+                <div class="source-info">
+                    <span class="current-source" id="currentSource">未选择视频源</span>
+                    <button class="btn btn-secondary btn-small" onclick="app.switchPage('sources')">
+                        <i class="fas fa-cog"></i> 管理
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- 内容展示区域 -->
+        <div class="content-area" id="contentArea">
+            <!-- 首页内容 -->
+            <div class="page-content" id="homePage">
+                <div class="page-title">
+                    <h2>热门视频</h2>
+                    <div class="pagination" id="homePagination"></div>
+                </div>
+                <div class="video-grid" id="homeVideoGrid"></div>
+            </div>
+
+            <!-- 搜索页面 -->
+            <div class="page-content hidden" id="searchPage">
+                <div class="page-title">
+                    <h2>搜索结果</h2>
+                    <div class="search-info">
+                        <div class="pagination" id="searchPagination"></div>
+                    </div>
+                </div>
+                <div class="video-grid" id="searchVideoGrid"></div>
+            </div>
+
+            <!-- 下载页面 -->
+            <div class="page-content hidden" id="downloadsPage">
+                <div class="page-title">
+                    <h2>下载队列</h2>
+                    <div class="download-controls">
+                        <button class="btn btn-secondary" id="clearCompletedBtn">
+                            <i class="fas fa-trash"></i> 清除已完成
+                        </button>
+                        <button class="btn btn-primary" id="refreshDownloadsBtn">
+                            <i class="fas fa-sync"></i> 刷新
+                        </button>
+                    </div>
+                </div>
+                <div class="download-list" id="downloadList"></div>
+            </div>
+
+            <!-- 视频源页面 -->
+            <div class="page-content hidden" id="sourcesPage">
+                <div class="page-title">
+                    <h2>视频源管理</h2>
+                    <div class="source-status">
+                        <span>当前活动源：</span>
+                        <span class="active-source-name" id="activeSourceName">无</span>
+                    </div>
+                </div>
+                <div class="sources-list" id="sourcesList"></div>
+            </div>
+        </div>
+    </main>
+
+    <!-- 视频详情模态框 -->
+    <div class="modal hidden" id="videoModal">
+        <div class="modal-content video-modal-content">
+            <div class="modal-header">
+                <h3 id="modalTitle">视频详情</h3>
+                <button class="modal-close" id="modalClose">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="video-detail-container">
+                    <div class="video-player-container">
+                        <div class="video-player" id="videoPlayer"></div>
+                    </div>
+                    <div class="video-detail-info">
+                        <div class="video-info-section">
+                            <h4>视频信息</h4>
+                            <div id="videoDetailInfo"></div>
+                        </div>
+                        <div class="quality-selection" id="qualitySelection"></div>
+                        <div class="video-actions">
+                            <button class="btn btn-primary" id="downloadVideoBtn">
+                                <i class="fas fa-download"></i> 下载视频
+                            </button>
+                            <button class="btn btn-secondary" id="copyLinkBtn">
+                                <i class="fas fa-copy"></i> 复制链接
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 加载指示器 -->
+    <div class="loading hidden" id="loading">
+        <div class="spinner"></div>
+        <p>加载中...</p>
+    </div>
+
+    <!-- 通知容器 -->
+    <div class="notifications" id="notifications"></div>
+</body>
+</html>
