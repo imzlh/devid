@@ -10,7 +10,8 @@
     "@std/http": "jsr:@std/http@1",
     "@takker/md5": "jsr:@takker/md5@^0.1.0",
     "oak": "jsr:@oak/oak@^16.0.0",
-    "dom": "jsr:@b-fuze/deno-dom@^0.1.44"
+    "dom": "jsr:@b-fuze/deno-dom@^0.1.44",
+    "jsencrypt": "https://cdn.jsdelivr.net/npm/jsencrypt@3.5.4/+esm"
   },
   "nodeModulesDir": "auto",
   "unstable": [

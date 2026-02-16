@@ -5,8 +5,8 @@ import S_17C from './sources/17c.ts';
 import { BaseVideoSource } from "./sources/index.ts";
 
 export const SOURCES: { new(): BaseVideoSource }[] = [
-    S_AGEFANS,
-    S_GG51,
-    S_KPDZ,
+    // S_AGEFANS,
+    // S_GG51,
+    // S_KPDZ,
     S_17C
 ];

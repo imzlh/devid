@@ -3,8 +3,47 @@ import { IM3U8Result, IVideoItem, IVideoList } from '../types/index.ts';
 import { fetch2, getDocument } from '../utils/fetch.ts';
 import { logError, logInfo, logWarn } from "../utils/logger.ts";
 import { BaseVideoSource, ImageData } from './index.ts';
-import { privateDecrypt, createDecipheriv, constants } from "node:crypto";
-import { Buffer } from "node:buffer";
+import { JSEncrypt } from 'jsencrypt'
+import assert from "node:assert";
+
+interface IVideo {
+    create_time: string,
+    enc_img: string,
+    eye: number,
+    id: number,
+    name: string,
+    time: string
+}
+
+interface IHome {
+    rank_videos: {
+        name: '排行榜',
+        videos: IVideo[]
+    },
+    recommend_videos: {
+        name: '今日推荐',
+        videos: IVideo[]
+    }
+}
+
+interface ISearch {
+    name: string,
+    current_page: number,
+    last_page: number,
+    total: number,
+    videos: IVideo[]
+};
+
+interface IDetail {
+    video: IVideo & { url: string }
+}
+
+interface IApiResponse<T = any> {
+    code: number,
+    data: T,
+    msg: string,
+    time: number
+}
 
 // 17C 视频源实现
 export default class C17VideoSource extends BaseVideoSource {
@@ -49,44 +88,36 @@ export default class C17VideoSource extends BaseVideoSource {
      * @param data - Base64 编码的 AES 加密数据
      * @param key - Base64 编码的 RSA 加密密钥
      */
-    private decrypt({ data, key }: { data: string; key: string }): string {
-        const privateKeyPem = `-----BEGIN RSA PRIVATE KEY-----
-MIIBVAIBADANBgkqhkiG9w0BAQEFAASCAT4wggE6AgEAAkEA0E9Nsuz6jYF+JeLq
-KaL1LkZyg0Wl4xPIwEzlDrO4UOMYGX1WG+nqf9ovpplgThgLcyoRM1YFshGFOrkA
-iHEZqwIDAQABAkABvEdncDX+K9ADPMq6ohLs2cVmdpQVOjr37ywRXUnx0o6skjM3
-Yg45uw3lpobrkckep0NxqrINeSsrY29hA3ZBAiEA8rnQiqs6hXw8tLIBk0i2i7tq
-ai9xew/lD/wDGQdtvdECIQDbs6kkuEs9us9avgF/JO7F13OmlDzR0lzrIzujxvLS
-uwIgW+BX/tVXnoVrWR50GDMS3gt/+VeiBen7U7SZ25SDRrECIBhIx41zgX2VRI43
-KlsvbeUYZ4QmJoLaycKD5ne36ec5AiEA44AwFDoD1qf1wIZ152QxrkZgGMyKG6c8
-36lRB5VdiME=
------END RSA PRIVATE KEY-----`;
+    private async decrypt({ data, key }: { data: string; key: string }) {
+        const certkey = `MIIBVAIBADANBgkqhkiG9w0BAQEFAASCAT4wggE6AgEAAkEA0E9Nsuz6jYF+JeLqKaL1LkZyg0Wl4xPIwEzlDrO4UOMYGX1WG+nqf9ovpplgThgLcyoRM1YFshGFOrkAiHEZqwIDAQABAkABvEdncDX+K9ADPMq6ohLs2cVmdpQVOjr37ywRXUnx0o6skjM3Yg45uw3lpobrkckep0NxqrINeSsrY29hA3ZBAiEA8rnQiqs6hXw8tLIBk0i2i7tqai9xew/lD/wDGQdtvdECIQDbs6kkuEs9us9avgF/JO7F13OmlDzR0lzrIzujxvLSuwIgW+BX/tVXnoVrWR50GDMS3gt/+VeiBen7U7SZ25SDRrECIBhIx41zgX2VRI43KlsvbeUYZ4QmJoLaycKD5ne36ec5AiEA44AwFDoD1qf1wIZ152QxrkZgGMyKG6c836lRB5VdiME=`;
 
-        // 1. RSA 解密（PKCS#1 v1.5 填充，对应 JSEncrypt 默认）
-        // 注意：Deno 的 node:crypto 支持 RSA_PKCS1_PADDING
-        const aesKeyBuffer = privateDecrypt(
-            {
-            key: privateKeyPem,
-            padding: constants.RSA_PKCS1_PADDING, // 关键：PKCS#1 v1.5
-            },
-            Buffer.from(key, "base64")
-        );
-        const aesKey = aesKeyBuffer.toString("utf-8");
+        // 1. RSA 解密
+        const rsa = new JSEncrypt();
+        rsa.setPublicKey(certkey);
+        const aesKey = rsa.decrypt(key);
 
-        // 2. 构造 IV（与原代码一致：反转后取前16字符）
+        if (!aesKey) throw new Error("RSA 解密失败");
+
+        // 2. 构造 IV（与原代码逻辑一致）
         const aesKeyReversed = aesKey.split("").reverse().join("");
         const iv = aesKeyReversed.substring(0, 16);
 
-        // 3. AES-CBC 解密（PKCS7 填充）
-        const decipher = createDecipheriv(
-            "aes-128-cbc", // 根据密钥长度自动选择：16字节=128, 24=192, 32=256
-            Buffer.from(aesKey, "utf-8"),
-            Buffer.from(iv, "utf-8")
+        // 3. AES-CBC 解密（Web Crypto API，Deno 原生支持）
+        const cryptoKey = await crypto.subtle.importKey(
+            "raw",
+            new TextEncoder().encode(aesKey),
+            { name: "AES-CBC" },
+            false,
+            ["decrypt"]
         );
-        
-        let decrypted = decipher.update(data, "base64", "utf-8");
-        decrypted += decipher.final("utf-8");
-        
-        return decrypted;
+
+        const decrypted = await crypto.subtle.decrypt(
+            { name: "AES-CBC", iv: new TextEncoder().encode(iv) },
+            cryptoKey,
+            Uint8Array.from(atob(data), c => c.charCodeAt(0))
+        );
+
+        return new TextDecoder().decode(decrypted);
     }
 
     // 初始化视频源 - 获取真实地址
@@ -112,7 +143,7 @@ KlsvbeUYZ4QmJoLaycKD5ne36ec5AiEA44AwFDoD1qf1wIZ152QxrkZgGMyKG6c8
                         await this.postInit()
                         return;
                     } catch (e) {
-                        logWarn('APP 入口请求失败，尝试主入口');
+                        logWarn('APP 入口请求失败，尝试主入口', e);
                     }
                 }
             }
@@ -166,23 +197,36 @@ KlsvbeUYZ4QmJoLaycKD5ne36ec5AiEA44AwFDoD1qf1wIZ152QxrkZgGMyKG6c8
     }
 
     private async postInit() {
-        try {
-            // 测试api
-            const res1 = await this.getAPI('/v1/blist?c=100')
-            const res2 = await this.getAPI('/v1/vod?c=100&sort=new&page=1&limit=10&cate_id=1');
-            const res3 = await this.getAPI('/v1/popup?c=100');
-            const res4 = await this.getAPI('/v1/tags?c=100&v=2')
-            const res5 = await this.getAPI('/v1/relist?c=100')
-        } catch (e) {
-            console.log(e);
-        }
+        // here to inject
     }
 
-    private async getAPI<T = any>(path: string): Promise<T> {
+    private async getAPI<T = any>(path: string, referrer = this.baseUrl): Promise<IApiResponse<T>> {
         const url = new URL(path, this.baseUrl);
-        const res = await fetch(url).then(r => r.json());
-        const dec = this.decrypt(res);
-        return JSON.parse(dec);
+        let fe, retry = 0;
+        do{
+            if (fe) logInfo('Retry: 目标服务器间歇性抽搐', path);
+            fe = await fetch(url, {
+                referrer
+            });
+        } while (fe.status == 502 && (retry ++) < 3);
+        if (fe.status == 502) throw new Error('失败: 无法获取数据');
+        const txt = await fe.text();
+        const res = JSON.parse(txt);
+        const dec = await this.decrypt(res);
+        const json = JSON.parse(dec);
+        assert(json.code, `API 请求失败: ${json.msg}`);
+        return json;
+    }
+
+    private convIVideo(vid: IVideo): IVideoItem {
+        return {
+            url: new URL(`/videoplay/0.html?v=${vid.id}`, this.baseUrl).href,
+            id: vid.id?.toString(),
+            views: vid.eye?.toString(),
+            title: vid.name,
+            thumbnail: new URL(vid.enc_img, this.baseUrl).href,
+            source: this.sourceId
+        }
     }
 
     // 获取主页视频列表
@@ -190,70 +234,15 @@ KlsvbeUYZ4QmJoLaycKD5ne36ec5AiEA44AwFDoD1qf1wIZ152QxrkZgGMyKG6c8
         if (!this.baseUrl) {
             throw new Error('视频源未初始化');
         }
-
-        const pageUrl = page > 1
-            ? new URL(`? page = ${page} `, this.baseUrl).href
-            : this.baseUrl;
-
-        const doc = await getDocument(pageUrl);
-        const videos = await this.parseVideoList(doc);
-
-        // 获取总页数
-        const paginationEl = doc.querySelector('.pagination-box ul li:last-child');
-        let totalPages = 1;
-        if (paginationEl) {
-            const text = paginationEl.textContent || '';
-            const match = text.match(/\/(\d+)/);
-            if (match) {
-                totalPages = parseInt(match[1]);
-            }
-        }
+        
+        const res5 = (await this.getAPI<IHome>('/v1/relist?c=100')).data;
+        const vid = res5.recommend_videos.videos.concat(res5.rank_videos.videos);
 
         return {
-            videos,
-            currentPage: page,
-            totalPages
+            videos: vid.map(e => this.convIVideo(e)),
+            currentPage: 1,
+            totalPages: 1
         };
-    }
-
-    // 解析视频列表
-    private async parseVideoList(doc: Document): Promise<IVideoItem[]> {
-        const videoElements = doc.querySelectorAll('.content-box .ran-box div a[href]');
-        const videos: IVideoItem[] = [];
-
-        for (const element of videoElements) {
-            // 跳过广告链接
-            if (element.getAttribute('target') === '_blank') {
-                continue;
-            }
-
-            const href = element.getAttribute('href');
-            if (!href || !href.includes('videoplay')) {
-                continue;
-            }
-
-            const url = new URL(href, this.baseUrl!).href;
-            const vid = new URL(url).searchParams.get('vid');
-
-            // 获取标题和缩略图
-            const titleEl = element.querySelector('.video-title, .title, span');
-            const title = titleEl?.textContent?.trim() || `视频${vid} `;
-
-            const imgEl = element.querySelector('img');
-            const thumbnail = imgEl?.getAttribute('src') || imgEl?.getAttribute('data-src') || '';
-
-            if (vid) {
-                videos.push({
-                    id: vid,
-                    title,
-                    thumbnail,
-                    url,
-                    source: this.sourceId
-                });
-            }
-        }
-
-        return videos;
     }
 
     // 搜索视频
@@ -262,73 +251,29 @@ KlsvbeUYZ4QmJoLaycKD5ne36ec5AiEA44AwFDoD1qf1wIZ152QxrkZgGMyKG6c8
             throw new Error('视频源未初始化');
         }
 
-        const searchUrl = new URL(`/ search / 0.html ? keyword = ${encodeURIComponent(query)}& page=${page} `, this.baseUrl).href;
-        const doc = await getDocument(searchUrl);
-        const videos = await this.parseVideoList(doc);
-
-        // 获取总页数
-        const paginationEl = doc.querySelector('.pagination-box ul li:last-child');
-        let totalPages = 1;
-        if (paginationEl) {
-            const text = paginationEl.textContent || '';
-            const match = text.match(/\/(\d+)/);
-            if (match) {
-                totalPages = parseInt(match[1]);
-            }
-        }
+        const res = await this.getAPI<ISearch>(`/v1/vod?c=0&sort=new&page=${page}&limit=30&name=${query}`);
 
         return {
-            videos,
+            videos: res.data.videos.map(e => this.convIVideo(e)),
             currentPage: page,
-            totalPages
+            totalPages: res.data.last_page
         };
     }
 
     // 获取视频信息
-    private async getVideoInfo(videoIdOrUrl: string): Promise<{ id: string; title: string; m3u8: string; thumbnail: string; url: string }> {
-        const url = videoIdOrUrl.includes('://')
-            ? videoIdOrUrl
-            : new URL(`/ videoplay / 0.html ? vid = ${videoIdOrUrl} `, this.baseUrl!).href;
+    private async getVideoInfo(vidurl: string): Promise<{ id: string; title: string; m3u8: string; thumbnail: string; url: string }> {
+        const vid = vidurl.match(/\/videoplay\/0\.html\?v=([^&]+?)$/)?.[1];  // `/videoplay/0.html?v=${vid.id}`
+        assert(vid, '无法解析视频 ID');
 
-        const doc = await getDocument(url);
-
-        // 获取标题
-        const titleEl = doc.querySelector('.video-title');
-        const title = titleEl?.textContent?.trim() || '未知视频';
-
-        // 获取缩略图
-        const imgEl = doc.querySelector('.video-poster img, .video-thumb img');
-        const thumbnail = imgEl?.getAttribute('src') || '';
-
-        // 获取 m3u8 - 需要从 script 中解析
-        const scripts = doc.getElementsByTagName('script');
-        let sl = '';
-        let encryptUrl = '';
-
-        for (const script of scripts) {
-            const content = script.innerHTML;
-            if (content.includes('m3u8') && content.includes('sl')) {
-                const slMatch = content.match(/sl\s*:\s*"([^"]+)"/);
-                const urlMatch = content.match(/encryptUrl\s*:\s*"([^"]+)"/);
-                if (slMatch) sl = slMatch[1];
-                if (urlMatch) encryptUrl = urlMatch[1];
-                break;
-            }
-        }
-
-        if (!sl) {
-            throw new Error('无法解析视频链接');
-        }
-
-        // 解码 m3u8 URL
-        const m3u8 = sl.split('').map(char => this.DECODE_MAPPER[char] ?? char).join('');
+        const api = await this.getAPI<IDetail>(`/v1/vod/${vid}`, vidurl);
+        const video = api.data.video;
 
         return {
-            id: videoIdOrUrl.includes('://') ? new URL(url).searchParams.get('vid') || videoIdOrUrl : videoIdOrUrl,
-            title,
-            m3u8: decodeURIComponent(m3u8).trim(),
-            thumbnail: encryptUrl ? new URL(encryptUrl, url).href : thumbnail,
-            url
+            id: vid,
+            title: video.name,
+            m3u8: video.url,
+            thumbnail: video.enc_img,
+            url: vidurl
         };
     }
 
@@ -356,13 +301,6 @@ KlsvbeUYZ4QmJoLaycKD5ne36ec5AiEA44AwFDoD1qf1wIZ152QxrkZgGMyKG6c8
 
     // 获取图片数据
     override async getImage(originalUrl: string): Promise<ImageData> {
-        if (!originalUrl) {
-            return {
-                data: new Uint8Array(),
-                contentType: 'image/jpeg'
-            };
-        }
-
         const imageUrl = originalUrl.startsWith('http')
             ? originalUrl
             : new URL(originalUrl, this.baseUrl!).href;
