@@ -652,6 +652,12 @@ class VideoManager {
         
         try {
             this.showLoading();
+            
+            // 首先渲染最近观看（第一页时）
+            if (page === 1) {
+                this.renderRecentWatch();
+            }
+            
             const data = await this.api.getHomeVideos(page);
             this.renderVideoGrid(data.videos || [], 'homeVideoGrid');
             this.renderPagination(data, 'home', 'homePagination');
@@ -668,6 +674,176 @@ class VideoManager {
         } finally {
             this.hideLoading();
         }
+    }
+    
+    /**
+     * 渲染最近观看区域
+     */
+    renderRecentWatch() {
+        const container = DOMHelper.$('#homeVideoGrid');
+        if (!container) return;
+        
+        // 清空容器
+        container.innerHTML = '';
+        
+        // 获取最近观看记录
+        const recent = this.playerManager.progress.getRecentWatch(4);
+        if (recent.length === 0) return;
+        
+        // 创建最近观看区域
+        const recentSection = DOMHelper.create('div', 'recent-watch-section');
+        recentSection.innerHTML = `
+            <div class="section-header">
+                <h3><i class="fas fa-history"></i> 最近观看</h3>
+                <button class="btn btn-small btn-text" id="clearRecentWatch">清除记录</button>
+            </div>
+            <div class="recent-watch-grid" id="recentWatchGrid"></div>
+        `;
+        
+        const grid = recentSection.querySelector('#recentWatchGrid');
+        
+        recent.forEach(item => {
+            const card = DOMHelper.create('div', 'video-card recent-watch-card');
+            const progressPercent = item.duration > 0 
+                ? Math.min(100, Math.round((item.progress / item.duration) * 100)) 
+                : 0;
+            
+            card.innerHTML = `
+                <div class="video-thumbnail">
+                    <img src="${item.thumbnail || this.getDefaultThumbnail()}" 
+                         alt="${item.title}" 
+                         loading="lazy"
+                         onerror="this.src='${this.getDefaultThumbnail()}'">
+                    <div class="video-duration">${this.formatDuration(item.progress)} / ${this.formatDuration(item.duration)}</div>
+                    <div class="watch-progress-bar" style="width: ${progressPercent}%"></div>
+                    <div class="video-actions-overlay">
+                        <button class="btn btn-large btn-primary video-resume-btn" title="继续观看">
+                            <i class="fas fa-play"></i>
+                        </button>
+                    </div>
+                    ${item.seriesId ? '<div class="series-badge">系列</div>' : ''}
+                </div>
+                <div class="video-info">
+                    <div class="video-title" title="${item.seriesTitle || item.title}">${item.seriesTitle || item.title}</div>
+                    <div class="video-meta">
+                        ${item.episodeNumber ? `第${item.episodeNumber}集 · ` : ''}${item.source}
+                    </div>
+                    <div class="watch-time">${this.formatTimeAgo(item.lastWatch)}</div>
+                </div>
+            `;
+            
+            // 绑定继续播放事件
+            const resumeBtn = card.querySelector('.video-resume-btn');
+            if (resumeBtn) {
+                DOMHelper.on(resumeBtn, 'click', (e) => {
+                    e.stopPropagation();
+                    this.resumeWatch(item);
+                });
+            }
+            
+            // 点击卡片也可以继续播放
+            DOMHelper.on(card, 'click', () => {
+                this.resumeWatch(item);
+            });
+            
+            grid.appendChild(card);
+        });
+        
+        // 绑定清除记录按钮
+        const clearBtn = recentSection.querySelector('#clearRecentWatch');
+        if (clearBtn) {
+            DOMHelper.on(clearBtn, 'click', () => {
+                if (confirm('确定要清除所有观看记录吗？')) {
+                    this.playerManager.progress.clearAllProgress();
+                    this.renderRecentWatch();
+                }
+            });
+        }
+        
+        container.appendChild(recentSection);
+        
+        // 添加分隔线
+        const divider = DOMHelper.create('div', 'section-divider');
+        divider.innerHTML = '<h3><i class="fas fa-fire"></i> 热门推荐</h3>';
+        container.appendChild(divider);
+    }
+    
+    /**
+     * 继续观看
+     * @param {Object} watchRecord - 观看记录
+     */
+    async resumeWatch(watchRecord) {
+        try {
+            this.showLoading();
+            
+            // 构造视频数据
+            const videoData = {
+                id: watchRecord.id,
+                title: watchRecord.episodeTitle || watchRecord.title,
+                thumbnail: watchRecord.thumbnail,
+                url: '', // 需要通过API重新获取
+                source: watchRecord.source
+            };
+            
+            if (watchRecord.seriesId) {
+                // 系列视频：打开系列详情页
+                // 由于可能没有完整URL，需要通知用户
+                this.notifications.info('正在加载系列详情...');
+                // 这里简化处理，实际可能需要根据系列ID重新获取数据
+                const seriesVideo = {
+                    id: watchRecord.seriesId,
+                    title: watchRecord.seriesTitle,
+                    thumbnail: watchRecord.thumbnail,
+                    url: '',
+                    source: watchRecord.source,
+                    contentType: 'series'
+                };
+                await this.showSeriesModal(seriesVideo);
+            } else {
+                // 单视频：直接播放
+                // 由于URL可能过期，需要重新解析
+                this.notifications.info('正在重新解析视频链接...');
+                // 简化处理：通知用户从列表中选择
+                this.notifications.warning('请从列表中重新选择该视频');
+            }
+        } catch (error) {
+            console.error('继续观看失败:', error);
+            this.notifications.error('继续观看失败，请从列表中重新选择');
+        } finally {
+            this.hideLoading();
+        }
+    }
+    
+    /**
+     * 格式化时长
+     * @param {number} seconds - 秒数
+     * @returns {string}
+     */
+    formatDuration(seconds) {
+        if (!seconds || isNaN(seconds)) return '00:00';
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+    
+    /**
+     * 格式化相对时间
+     * @param {number} timestamp - 时间戳
+     * @returns {string}
+     */
+    formatTimeAgo(timestamp) {
+        const now = Date.now();
+        const diff = now - timestamp;
+        
+        const minute = 60 * 1000;
+        const hour = 60 * minute;
+        const day = 24 * hour;
+        
+        if (diff < minute) return '刚刚';
+        if (diff < hour) return `${Math.floor(diff / minute)}分钟前`;
+        if (diff < day) return `${Math.floor(diff / hour)}小时前`;
+        if (diff < 7 * day) return `${Math.floor(diff / day)}天前`;
+        return new Date(timestamp).toLocaleDateString();
     }
     
     /**

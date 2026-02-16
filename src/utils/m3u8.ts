@@ -79,12 +79,6 @@ export class M3U8Parser {
             } else if (line && !line.startsWith('#')) {
                 // 变体URL行
                 currentVariant.uri = this.urlResolver.resolve(line.trim());
-
-                if (!currentVariant.bandwidth) {
-                    logError('Variant missing required BANDWIDTH attribute');
-                    continue;
-                }
-
                 manifest.variants!.push(currentVariant as IM3U8Variant);
                 currentVariant = {};
             } else if (line.startsWith('#EXT-X-MEDIA:')) {

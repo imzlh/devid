@@ -30,16 +30,7 @@ if (config.server.verboseLogging) {
     logInfo('Verbose logging enabled');
 }
 
-// 任务持久化路径
-const TASKS_PERSISTENCE_PATH = `${config.server.dataDir}/download_tasks.json`;
-const SOURCES_CONFIG_PATH = `${config.server.dataDir}/sources.json`;
-
-// 确保数据目录存在
-try {
-    await Deno.mkdir(config.server.dataDir, { recursive: true });
-} catch {
-    // 目录可能已存在
-}
+// 数据持久化使用 Deno KV，无需文件路径
 
 // 中间件：设置CORS和错误处理
 app.use(async (ctx, next) => {
@@ -405,7 +396,8 @@ async function handleProxyRequest(
 
             // mark
             if (task_id) {
-                downloadManager.markStart(task_id, manifest.segments.length);
+                const durations = manifest.segments.map(s => s.duration);
+                downloadManager.markStart(task_id, manifest.segments.length, durations);
             }
 
             return {
@@ -434,18 +426,25 @@ async function handleProxyRequest(
             };
         }
 
-        // 回退到正常
+        // 回退到正常（直接视频文件下载）
         if (!response.body) 
             throw new Error('The response from upstream has no body');
         let targetStream = response.body;
         const contentLen = parseInt(response.headers.get('content-length') || '0');
         if (task_id && contentLen) {
             let written = 0;
+            // 对于大文件使用更平滑的进度更新（每1%更新一次）
+            let lastReportedPercent = 0;
             const transform = new TransformStream<Uint8Array<ArrayBuffer>>({
                 transform(chunk, ctrl) {
                     ctrl.enqueue(chunk);
                     written += chunk.byteLength;
-                    downloadManager.setProgress(task_id, written * 100 / contentLen);
+                    const currentPercent = Math.floor((written * 100) / contentLen);
+                    // 每1%或完成时更新一次，避免频繁更新
+                    if (currentPercent > lastReportedPercent || written >= contentLen) {
+                        lastReportedPercent = currentPercent;
+                        downloadManager.setProgressByBytes(task_id, written, contentLen);
+                    }
                 }
             });
             response.body.pipeTo(transform.writable);
@@ -499,7 +498,8 @@ router.get('/api/proxy/:name', async (ctx) => {
             encodedUrl!,
             referer ?? undefined,
             trace_id ?? undefined,
-            rangeHeader ?? undefined
+            rangeHeader ?? undefined,
+            ctx.request.url.searchParams.get('type') ?? undefined
         );
 
         logDebug(`代理请求成功，内容类型: ${contentType}, 状态: ${status}`);
@@ -719,7 +719,7 @@ router.post('/api/downloads/:id/cancel', async (ctx) => {
         if (success) {
             logInfo(`下载任务 ${taskId} 已取消`);
             // 保存状态
-            await downloadManager.saveToFile(TASKS_PERSISTENCE_PATH);
+            await downloadManager.saveToKV();
         } else {
             logWarn(`取消下载任务 ${taskId} 失败`);
         }
@@ -776,7 +776,7 @@ router.delete('/api/downloads/:id', async (ctx) => {
 
         const success = downloadManager.deleteDownload(taskId, deleteFile);
         if (success) {
-            await downloadManager.saveToFile(TASKS_PERSISTENCE_PATH);
+            await downloadManager.saveToKV();
         }
         ctx.response.body = { success };
     } catch (error) {
@@ -808,7 +808,7 @@ router.post('/api/downloads/clear-completed', async (ctx) => {
         
         if (result.count > 0) {
             logInfo(`已清除 ${result.count} 个已完成下载任务，删除 ${result.deletedFiles} 个文件`);
-            await downloadManager.saveToFile(TASKS_PERSISTENCE_PATH);
+            await downloadManager.saveToKV();
         } else {
             logInfo('没有可清除的已完成下载任务');
         }
@@ -887,7 +887,7 @@ const port = config.server.port;
 
 // 加载持久化的下载任务
 try {
-    await downloadManager.loadFromFile(TASKS_PERSISTENCE_PATH);
+    await downloadManager.loadFromKV();
 } catch (error) {
     logWarn('加载持久化下载任务失败:', error);
 }
@@ -905,7 +905,7 @@ try {
 // 定期保存下载任务（每30秒）
 setInterval(async () => {
     try {
-        await downloadManager.saveToFile(TASKS_PERSISTENCE_PATH);
+        await downloadManager.saveToKV();
     } catch (error) {
         logError('保存下载任务失败:', error);
     }
@@ -920,7 +920,7 @@ const gracefulShutdown = async () => {
     
     // 保存下载任务
     try {
-        await downloadManager.saveToFile(TASKS_PERSISTENCE_PATH);
+        await downloadManager.saveToKV();
         logInfo('下载任务已保存');
     } catch (error) {
         logError('保存下载任务失败:', error);

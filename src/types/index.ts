@@ -209,7 +209,7 @@ export interface IM3U8Segment {
 
 export interface IM3U8Variant {
     uri: string;
-    bandwidth: number;
+    bandwidth?: number;
     averageBandwidth?: number;
     codecs?: string;
     resolution?: { width: number; height: number };

@@ -1,10 +1,13 @@
 /**
  * 播放进度管理类
+ * 支持：进度跟踪、最近观看记录、系列关联
  */
 class ProgressManager {
     constructor() {
         this.storageKey = 'vdown_video_progress';
+        this.recentKey = 'vdown_recent_watch';
         this.progressData = this.loadProgress();
+        this.recentWatch = this.loadRecentWatch();
     }
 
     /**
@@ -22,6 +25,20 @@ class ProgressManager {
     }
 
     /**
+     * 加载最近观看记录
+     * @returns {Array}
+     */
+    loadRecentWatch() {
+        try {
+            const data = localStorage.getItem(this.recentKey);
+            return data ? JSON.parse(data) : [];
+        } catch (error) {
+            console.error('Failed to load recent watch:', error);
+            return [];
+        }
+    }
+
+    /**
      * 保存播放进度到localStorage
      */
     saveProgress() {
@@ -33,21 +50,88 @@ class ProgressManager {
     }
 
     /**
+     * 保存最近观看记录
+     */
+    saveRecentWatch() {
+        try {
+            localStorage.setItem(this.recentKey, JSON.stringify(this.recentWatch));
+        } catch (error) {
+            console.error('Failed to save recent watch:', error);
+        }
+    }
+
+    /**
      * 保存视频播放进度
      * @param {string} videoId - 视频ID
      * @param {number} time - 播放时间(秒)
      * @param {number} duration - 视频总时长(秒)
+     * @param {Object} meta - 视频元数据 {title, thumbnail, seriesId, episodeNumber, source}
      */
-    saveVideoProgress(videoId, time, duration) {
+    saveVideoProgress(videoId, time, duration, meta = {}) {
         if (!videoId) return;
 
+        // 保存进度数据
         this.progressData[videoId] = {
             time: time,
             duration: duration,
-            lastUpdated: Date.now()
+            lastUpdated: Date.now(),
+            seriesId: meta.seriesId || null,
+            episodeNumber: meta.episodeNumber || null
         };
 
+        // 同时更新最近观看记录
+        if (meta.title) {
+            this.addRecentWatch({
+                id: videoId,
+                title: meta.title,
+                thumbnail: meta.thumbnail || '',
+                seriesId: meta.seriesId || null,
+                seriesTitle: meta.seriesTitle || meta.title,
+                episodeNumber: meta.episodeNumber || null,
+                episodeTitle: meta.episodeTitle || meta.title,
+                progress: time,
+                duration: duration,
+                source: meta.source || '',
+                lastWatch: Date.now()
+            });
+        }
+
         this.saveProgress();
+    }
+
+    /**
+     * 添加最近观看记录
+     * @param {Object} watchRecord - 观看记录
+     */
+    addRecentWatch(watchRecord) {
+        // 移除重复记录（同一视频）
+        this.recentWatch = this.recentWatch.filter(r => r.id !== watchRecord.id);
+        
+        // 添加到开头
+        this.recentWatch.unshift(watchRecord);
+        
+        // 只保留最近20条
+        if (this.recentWatch.length > 20) {
+            this.recentWatch = this.recentWatch.slice(0, 20);
+        }
+        
+        this.saveRecentWatch();
+    }
+
+    /**
+     * 获取最近观看记录
+     * @param {number} limit - 返回数量限制
+     * @returns {Array}
+     */
+    getRecentWatch(limit = 10) {
+        // 清理过期记录（超过30天）
+        const now = Date.now();
+        this.recentWatch = this.recentWatch.filter(r => {
+            return (now - r.lastWatch) < 30 * 24 * 60 * 60 * 1000;
+        });
+        this.saveRecentWatch();
+        
+        return this.recentWatch.slice(0, limit);
     }
 
     /**
@@ -84,9 +168,33 @@ class ProgressManager {
      * 保存剧集播放进度
      * @param {string} episodeId - 剧集ID
      * @param {number} time - 播放时间(秒)
+     * @param {Object} meta - 剧集元数据
      */
-    saveEpisodePosition(episodeId, time) {
-        this.saveVideoProgress(episodeId, time, 0);
+    saveEpisodePosition(episodeId, time, meta = {}) {
+        this.saveVideoProgress(episodeId, time, 0, meta);
+    }
+
+    /**
+     * 获取系列中当前观看到的剧集
+     * @param {string} seriesId - 系列ID
+     * @returns {Object|null} - 最近观看的剧集信息
+     */
+    getSeriesCurrentEpisode(seriesId) {
+        if (!seriesId) return null;
+        
+        // 查找该系列的所有进度记录
+        const episodes = Object.entries(this.progressData)
+            .filter(([_, data]) => data.seriesId === seriesId)
+            .sort((a, b) => b[1].lastUpdated - a[1].lastUpdated);
+        
+        if (episodes.length === 0) return null;
+        
+        const [episodeId, data] = episodes[0];
+        return {
+            episodeId,
+            episodeNumber: data.episodeNumber,
+            progress: data.time
+        };
     }
 
     /**
@@ -98,6 +206,9 @@ class ProgressManager {
             delete this.progressData[videoId];
             this.saveProgress();
         }
+        // 同时从最近观看中移除
+        this.recentWatch = this.recentWatch.filter(r => r.id !== videoId);
+        this.saveRecentWatch();
     }
 
     /**
@@ -105,7 +216,9 @@ class ProgressManager {
      */
     clearAllProgress() {
         this.progressData = {};
+        this.recentWatch = [];
         this.saveProgress();
+        this.saveRecentWatch();
     }
 }
 
@@ -277,7 +390,17 @@ class VideoPlayerManager {
             // 每5秒保存一次进度
             if (currentTime - lastSaveTime > 5) {
                 if (this.currentEpisodeId) {
-                    this.progress.saveEpisodePosition(this.currentEpisodeId, currentTime);
+                    // 获取当前剧集信息用于保存元数据
+                    const currentEp = this.episodes[this.currentEpisodeIndex];
+                    this.progress.saveEpisodePosition(this.currentEpisodeId, currentTime, {
+                        title: this.currentVideo?.title || '',
+                        thumbnail: this.currentVideo?.thumbnail || '',
+                        seriesId: this.currentSeriesId,
+                        seriesTitle: this.currentVideo?.title?.split(' - ')[0] || this.currentVideo?.title || '',
+                        episodeNumber: currentEp?.episodeNumber || this.currentEpisodeIndex + 1,
+                        episodeTitle: currentEp?.title || '',
+                        source: this.currentVideo?.source || ''
+                    });
                 }
                 lastSaveTime = currentTime;
             }
@@ -402,7 +525,16 @@ class VideoPlayerManager {
                 // 保存最终进度
                 if (this.currentEpisodeId) {
                     const currentTime = this.player.currentTime;
-                    this.progress.saveEpisodePosition(this.currentEpisodeId, currentTime);
+                    const currentEp = this.episodes[this.currentEpisodeIndex];
+                    this.progress.saveEpisodePosition(this.currentEpisodeId, currentTime, {
+                        title: this.currentVideo?.title || '',
+                        thumbnail: this.currentVideo?.thumbnail || '',
+                        seriesId: this.currentSeriesId,
+                        seriesTitle: this.currentVideo?.title?.split(' - ')[0] || this.currentVideo?.title || '',
+                        episodeNumber: currentEp?.episodeNumber || this.currentEpisodeIndex + 1,
+                        episodeTitle: currentEp?.title || '',
+                        source: this.currentVideo?.source || ''
+                    });
                 }
                 this.player.destroy();
             } catch (error) {

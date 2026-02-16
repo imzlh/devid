@@ -858,6 +858,10 @@ body {
     background-color: var(--warning-color);
 }
 
+.notification.info {
+    background-color: var(--accent-color);
+}
+
 /* 动画 */
 @keyframes fadeIn {
     from { opacity: 0; }
@@ -891,8 +895,25 @@ body {
     }
     
     .sidebar {
-        transform: translateX(-100%);
-        transition: transform 0.3s ease;
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        z-index: 1000;
+        flex-direction: row;
+        height: auto !important;
+        width: 100vw;
+        top: auto;
+        gap: 16px;
+        padding: 0 20px;
+    }
+
+    .sidebar > * {
+        width: auto;
+    }
+
+    .nav-menu {
+        flex-direction: row;
+        justify-content: center;
     }
     
     .sidebar.show {
@@ -921,6 +942,10 @@ body {
     
     .video-player {
         height: 250px;
+    }
+
+    .content-area {
+        margin-bottom: 82px;
     }
 }
 
@@ -1444,4 +1469,132 @@ body {
 .context-menu-item i {
     width: 16px;
     text-align: center;
+}/* 最近观看区域 */
+.recent-watch-section {
+    margin-bottom: 30px;
+}
+
+.section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid var(--border-color);
+}
+
+.section-header h3 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 20px;
+    color: var(--text-primary);
+    margin: 0;
+}
+
+.section-header h3 i {
+    color: var(--accent-color);
+}
+
+.btn-text {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    padding: 6px 12px;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.btn-text:hover {
+    color: var(--danger-color);
+}
+
+.recent-watch-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 20px;
+}
+
+.recent-watch-card {
+    position: relative;
+}
+
+.recent-watch-card .watch-progress-bar {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    height: 4px;
+    background: linear-gradient(90deg, var(--accent-color), var(--success-color));
+    transition: width 0.3s ease;
+    z-index: 5;
+}
+
+.recent-watch-card .watch-time {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 4px;
+}
+
+.recent-watch-card .video-resume-btn {
+    width: 50px;
+    height: 50px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.recent-watch-card .video-resume-btn i {
+    font-size: 20px;
+    margin-left: 4px;
+}
+
+/* 分隔线 */
+.section-divider {
+    display: flex;
+    align-items: center;
+    margin: 30px 0;
+    gap: 15px;
+}
+
+.section-divider::before,
+.section-divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border-color), transparent);
+}
+
+.section-divider h3 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 20px;
+    color: var(--text-primary);
+    margin: 0;
+    white-space: nowrap;
+}
+
+.section-divider h3 i {
+    color: var(--accent-color);
+}
+
+/* 响应式 - 最近观看 */
+@media (max-width: 768px) {
+    .recent-watch-grid {
+        grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+        gap: 15px;
+    }
+    
+    .section-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+    }
+}
+
+@media (max-width: 480px) {
+    .recent-watch-grid {
+        grid-template-columns: 1fr;
+    }
 }

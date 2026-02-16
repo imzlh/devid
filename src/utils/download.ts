@@ -58,18 +58,6 @@ async function withTimeout<T>(
     });
 }
 
-/**
- * 稳健的下载管理器
- * 
- * 特性：
- * - 超时控制：每个下载任务有最大运行时间限制
- * - 磁盘空间检查：下载前自动检查磁盘空间
- * - 并发控制：限制同时下载的任务数
- * - 任务持久化：支持保存/恢复任务状态
- * - 自动重试：失败任务可自动重试
- * - 进度追踪：详细的下载进度和统计
- * - 定期清理：自动清理过期任务
- */
 export class DownloadManager {
     private downloadTasks = new Map<string, IDownloadTask>();
     private activeDownloads = new Map<string, AbortController>();
@@ -715,7 +703,9 @@ export class DownloadManager {
         return task;
     }
 
-    // ==================== 持久化 ====================
+    // ==================== 持久化 (Deno KV) ====================
+
+    private kvKey = 'download_tasks';
 
     /**
      * 导出任务到持久化格式
@@ -774,31 +764,51 @@ export class DownloadManager {
     }
 
     /**
-     * 保存任务到文件
+     * 保存任务到 Deno KV
      */
-    async saveToFile(filePath: string): Promise<void> {
+    async saveToKV(): Promise<void> {
         try {
-            const data = JSON.stringify(this.exportTasks(), null, 2);
-            await Deno.writeTextFile(filePath, data);
-            logDebug(`保存下载任务到: ${filePath}`);
+            const kv = await Deno.openKv();
+            const tasks = this.exportTasks();
+            await kv.set([this.kvKey], tasks);
+            kv.close();
+            logDebug(`保存 ${tasks.length} 个下载任务到 KV`);
         } catch (error) {
-            logError(`保存下载任务失败: ${filePath}`, error);
+            logError('保存下载任务到 KV 失败:', error);
         }
     }
 
     /**
-     * 从文件加载任务
+     * 从 Deno KV 加载任务
      */
-    async loadFromFile(filePath: string): Promise<void> {
+    async loadFromKV(): Promise<void> {
         try {
-            const data = await Deno.readTextFile(filePath);
-            const tasks = JSON.parse(data) as IDownloadTaskPersisted[];
-            this.importTasks(tasks);
-            logInfo(`从 ${filePath} 加载 ${tasks.length} 个下载任务`);
-        } catch (error) {
-            if (!(error instanceof Deno.errors.NotFound)) {
-                logError(`加载下载任务失败: ${filePath}`, error);
+            const kv = await Deno.openKv();
+            const result = await kv.get<IDownloadTaskPersisted[]>([this.kvKey]);
+            kv.close();
+            
+            if (result.value) {
+                this.importTasks(result.value);
+                logInfo(`从 KV 加载 ${result.value.length} 个下载任务`);
             }
+        } catch (error) {
+            logError('从 KV 加载下载任务失败:', error);
         }
+    }
+
+    /**
+     * 保存任务到文件 (向下兼容)
+     * @deprecated 使用 saveToKV 代替
+     */
+    async saveToFile(_filePath: string): Promise<void> {
+        return this.saveToKV();
+    }
+
+    /**
+     * 从文件加载任务 (向下兼容)
+     * @deprecated 使用 loadFromKV 代替
+     */
+    async loadFromFile(_filePath: string): Promise<void> {
+        return this.loadFromKV();
     }
 }
