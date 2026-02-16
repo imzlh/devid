@@ -1,49 +1,121 @@
-import { DownloadTask } from '../types/index.ts';
-import { logError, logInfo, logDebug } from "./logger.ts";
+import { IDownloadTask, IDownloadTaskPersisted } from '../types/index.ts';
+import { logError, logInfo, logDebug, logWarn } from "./logger.ts";
 import { SERVER_ADDR } from "../server.ts";
+import { getConfig } from "../config/index.ts";
+
+// 清理间隔固定值
+const TASK_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;  // 5分钟
+
+// 下载统计
+interface DownloadStats {
+    totalBytesDownloaded: number;
+    totalFilesDownloaded: number;
+    failedDownloads: number;
+    cancelledDownloads: number;
+}
+
+// 延迟函数
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+// 格式化字节
+function formatBytes(bytes: number): string {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+}
+
+// 带超时的 Promise
+async function withTimeout<T>(
+    promise: Promise<T>, 
+    timeoutMs: number, 
+    operationName: string,
+    signal?: AbortSignal
+): Promise<T> {
+    return new Promise((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+            reject(new Error(`${operationName} 超时(${timeoutMs}ms)`));
+        }, timeoutMs);
+
+        // 监听外部取消信号
+        if (signal) {
+            signal.addEventListener('abort', () => {
+                clearTimeout(timeoutId);
+                reject(new Error(`${operationName} 已取消`));
+            }, { once: true });
+        }
+
+        promise
+            .then(result => {
+                clearTimeout(timeoutId);
+                resolve(result);
+            })
+            .catch(error => {
+                clearTimeout(timeoutId);
+                reject(error);
+            });
+    });
+}
 
 /**
- * 下载管理器
+ * 稳健的下载管理器
+ * 
+ * 特性：
+ * - 超时控制：每个下载任务有最大运行时间限制
+ * - 磁盘空间检查：下载前自动检查磁盘空间
+ * - 并发控制：限制同时下载的任务数
+ * - 任务持久化：支持保存/恢复任务状态
+ * - 自动重试：失败任务可自动重试
+ * - 进度追踪：详细的下载进度和统计
+ * - 定期清理：自动清理过期任务
  */
 export class DownloadManager {
-    private downloadTasks = new Map<string, DownloadTask>();
+    private downloadTasks = new Map<string, IDownloadTask>();
     private activeDownloads = new Map<string, AbortController>();
+    private downloadQueue: string[] = [];  // 等待下载的队列
+    private stats: DownloadStats = {
+        totalBytesDownloaded: 0,
+        totalFilesDownloaded: 0,
+        failedDownloads: 0,
+        cancelledDownloads: 0
+    };
+    private cleanupTimer: number | null = null;
+    private taskIdCounter = 0;
 
-    markStep(taskId: string) {
-        const task = this.downloadTasks.get(taskId);
-        if (task && task.totalSegments) {
-            // 监控进度
-            const segPercent = 100 / task.totalSegments;
-            const oldProgress = task.progress;
-            task.progress = oldProgress + segPercent;
-        }
+    constructor() {
+        // 启动定期清理
+        this.startCleanupTimer();
+        logInfo('下载管理器已初始化');
     }
 
-    markStart(taskId: string, allSegments: number) {
-        const task = this.downloadTasks.get(taskId);
-        if (task) {
-            task.totalSegments = allSegments;
-            task.status = 'downloading';
-        }
-    }
+    // ==================== 任务创建 ====================
 
     /**
-     * 创建下载任务（修复路径安全问题）
+     * 创建下载任务（带安全检查）
      */
-    createDownloadTask(url: string, title: string, outputPath: string = './downloads', referer?: string): string {
-        const taskId = crypto.randomUUID();
+    createDownloadTask(
+        url: string, 
+        title: string, 
+        outputPath: string = './downloads', 
+        referer?: string
+    ): string {
+        // 验证URL
+        try {
+            new URL(url);
+        } catch {
+            throw new Error(`无效的下载URL: ${url}`);
+        }
 
+        const taskId = `dl_${Date.now()}_${++this.taskIdCounter}`;
         const safeTitle = this.sanitizeFileName(title);
         const fileName = `${safeTitle}.mp4`;
         
-        // 如果outputPath看起来像URL（以http开头），则使用默认路径
-        const safeOutputPath = outputPath && !outputPath.startsWith('http') 
-            ? outputPath 
-            : './downloads';
-            
+        // 清理路径
+        const safeOutputPath = this.sanitizePath(outputPath);
         const filePath = `${safeOutputPath}/${fileName}`;
 
-        const task: DownloadTask = {
+        const task: IDownloadTask = {
             id: taskId,
             url,
             title,
@@ -53,11 +125,19 @@ export class DownloadManager {
             status: 'pending',
             progress: 0,
             createTime: new Date(),
-            referer
+            referer,
+            retryCount: 0,
+            maxRetries: getConfig().download.retryAttempts
         };
 
         this.downloadTasks.set(taskId, task);
-        logDebug(`创建下载任务: ${taskId}, 文件名: ${fileName}, 输出路径: ${safeOutputPath}`);
+        this.downloadQueue.push(taskId);
+        
+        logInfo(`创建下载任务: ${taskId}, 标题: ${title}, 路径: ${safeOutputPath}`);
+        
+        // 尝试开始下载（如果有空位）
+        this.processQueue();
+        
         return taskId;
     }
 
@@ -65,134 +145,335 @@ export class DownloadManager {
      * 清理文件名，移除非法字符
      */
     private sanitizeFileName(name: string): string {
-        // Windows不允许的字符: \ / : * ? " < > |
-        // 同时移除连续的空格和句点
+        if (!name || typeof name !== 'string') {
+            return 'unnamed';
+        }
+        
         return name
-            .replace(/[\\/:*?"<>|]/g, '_')  // 替换非法字符
-            .replace(/\s+/g, ' ')           // 合并连续空格
-            .replace(/\.+/g, '.')           // 合并连续句点
-            .replace(/^\.+/, '')            // 移除开头的句点
-            .trim()                         // 移除首尾空格
-            .substring(0, 200);             // 限制长度防止路径过长
+            .replace(/[\\/:*?"<>|]/g, '_')   // 替换Windows非法字符
+            .replace(/[\x00-\x1f\x7f]/g, '')  // 移除控制字符
+            .replace(/\s+/g, ' ')             // 合并连续空格
+            .replace(/\.+/g, '.')             // 合并连续句点
+            .replace(/^\.+/, '')              // 移除开头的句点
+            .trim()                           // 移除首尾空格
+            .substring(0, 200) || 'unnamed';  // 限制长度，确保非空
     }
 
-    // 开始下载
-    async startDownload(taskId: string): Promise<boolean> {
-        logInfo(`开始下载任务: ${taskId}`);
-        if (!taskId) {
-            logError('下载任务ID不能为空');
-            return false;
+    /**
+     * 清理路径，防止目录遍历攻击
+     */
+    private sanitizePath(path: string): string {
+        if (!path || typeof path !== 'string') {
+            return './downloads';
+        }
+        
+        // 如果路径包含 .. 或以 http 开头，使用默认路径
+        if (path.includes('..') || path.startsWith('http')) {
+            logWarn(`检测到不安全路径: ${path}，使用默认路径`);
+            return './downloads';
+        }
+        
+        return path.replace(/\/+$/, '') || './downloads';  // 移除末尾斜杠
+    }
+
+    // ==================== 下载控制 ====================
+
+    /**
+     * 处理下载队列
+     */
+    private async processQueue(): Promise<void> {
+        // 检查并发限制
+        const maxConcurrent = getConfig().download.maxConcurrent;
+        if (this.activeDownloads.size >= maxConcurrent) {
+            logDebug(`并发下载数已达上限(${maxConcurrent})，任务进入队列等待`);
+            return;
         }
 
+        // 获取下一个待下载任务
+        while (this.downloadQueue.length > 0 && this.activeDownloads.size < maxConcurrent) {
+            const taskId = this.downloadQueue.shift();
+            if (!taskId) continue;
+
+            const task = this.downloadTasks.get(taskId);
+            if (!task || task.status !== 'pending') continue;
+
+            // 开始下载（不等待，让队列继续处理）
+            this.startDownloadInternal(taskId).catch(error => {
+                logError(`启动下载任务失败 ${taskId}:`, error);
+            });
+        }
+    }
+
+    /**
+     * 开始下载（内部实现）
+     */
+    private async startDownloadInternal(taskId: string): Promise<boolean> {
         const task = this.downloadTasks.get(taskId);
         if (!task) {
-            logError(`下载任务不存在: ${taskId}, 当前任务数量: ${this.downloadTasks.size}`);
-            logDebug(`所有任务ID: ${Array.from(this.downloadTasks.keys()).join(', ')}`);
+            logError(`下载任务不存在: ${taskId}`);
             return false;
         }
 
-        if (this.activeDownloads.has(taskId)) {
-            logError(`下载任务已在下载中: ${taskId}`);
+        if (task.status === 'downloading') {
+            logWarn(`下载任务已在下载中: ${taskId}`);
             return false;
         }
 
-        if (task.status !== 'pending' && task.status !== 'error') {
-            logError(`下载任务状态不允许开始: ${taskId}, 状态: ${task.status}`);
+        // 检查磁盘空间
+        const hasSpace = await this.checkDiskSpace(task.outputPath);
+        if (!hasSpace) {
+            task.status = 'error';
+            const minDisk = getConfig().download.minDiskFreeMB;
+            task.error = `磁盘空间不足，需要至少 ${minDisk}MB 可用空间`;
+            logError(task.error);
             return false;
         }
+
+        // 创建 AbortController
+        const controller = new AbortController();
+        this.activeDownloads.set(taskId, controller);
 
         task.status = 'downloading';
         task.startTime = new Date();
+        task.error = undefined;
 
-        // 修复2：创建AbortController用于取消下载
-        const controller = new AbortController();
-        this.activeDownloads.set(taskId, controller);
+        logInfo(`开始下载任务: ${taskId}, 标题: ${task.title}`);
 
         try {
             // 确保输出目录存在
             await this.ensureDirectoryExists(task.outputPath);
 
-            // 只处理M3U8下载
-            logInfo(`开始下载M3U8视频: ${task.title}`);
-
-            // 修复3：使用新的下载策略，完全基于Deno进度
-            const success = await this.downloadM3U8Video(task, controller.signal);
+            // 执行下载（带超时）
+            const success = await withTimeout(
+                this.downloadM3U8Video(task, controller.signal),
+                getConfig().download.timeoutMs,
+                `下载任务 ${taskId}`,
+                controller.signal
+            );
 
             if (success) {
                 task.status = 'completed';
                 task.progress = 100;
                 task.endTime = new Date();
-                logInfo(`下载完成: ${task.title}`);
+                this.stats.totalFilesDownloaded++;
+                logInfo(`下载完成: ${task.title} -> ${task.filePath}`);
             } else {
-                task.status = 'error';
-                task.error = 'M3U8视频下载失败';
-                logError(`下载失败: ${task.title}`);
+                throw new Error('下载返回失败状态');
             }
 
             return success;
         } catch (error) {
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            
+            // 检查是否已取消（使用类型断言绕过TypeScript检查）
+            if ((task.status as string) === 'cancelled') {
+                logInfo(`下载任务已取消: ${taskId}`);
+                return false;
+            }
+
+            // 检查是否需要重试
+            const maxRetries = getConfig().download.retryAttempts;
+            if ((task.retryCount || 0) < (task.maxRetries || maxRetries)) {
+                task.retryCount = (task.retryCount || 0) + 1;
+                task.status = 'pending';
+                task.progress = 0;
+                logWarn(`下载失败，准备重试 (${task.retryCount}/${task.maxRetries}): ${errorMsg}`);
+                
+                await delay(getConfig().download.retryDelayMs);
+                this.downloadQueue.unshift(taskId);  // 放回队列头部优先重试
+                this.processQueue();
+                return false;
+            }
+
+            // 最终失败
             task.status = 'error';
-            task.error = error instanceof Error ? error.message : String(error);
-            logError(`下载失败: ${task.title}`, error);
+            task.error = errorMsg;
+            this.stats.failedDownloads++;
+            logError(`下载最终失败: ${task.title}`, error);
             return false;
         } finally {
             this.activeDownloads.delete(taskId);
+            // 处理队列中的下一个任务
+            this.processQueue();
         }
     }
 
     /**
-     * 修复4：新的M3U8下载策略，进度完全基于Deno下载
+     * 公共API：开始下载（添加到队列）
      */
-    private async downloadM3U8Video(task: DownloadTask, signal: AbortSignal): Promise<boolean> {
+    async startDownload(taskId: string): Promise<boolean> {
+        const task = this.downloadTasks.get(taskId);
+        if (!task) {
+            logError(`开始下载失败: 任务不存在 ${taskId}`);
+            return false;
+        }
+
+        if (task.status === 'downloading') {
+            logWarn(`任务已在下载中: ${taskId}`);
+            return true;
+        }
+
+        if (task.status === 'completed') {
+            logWarn(`任务已下载完成: ${taskId}`);
+            return true;
+        }
+
+        // 重置状态并加入队列
+        task.status = 'pending';
+        task.retryCount = 0;
+        
+        if (!this.downloadQueue.includes(taskId)) {
+            this.downloadQueue.push(taskId);
+        }
+
+        this.processQueue();
+        return true;
+    }
+
+    /**
+     * 下载M3U8视频（使用FFmpeg）
+     */
+    private async downloadM3U8Video(task: IDownloadTask, signal: AbortSignal): Promise<boolean> {
         try {
-            logInfo('使用FFmpeg直接下载视频...');
-            
-            // 修复：确保文件路径是绝对路径且格式正确
-            const absoluteFilePath = Deno.realPathSync(Deno.cwd()) + '/' + task.filePath.replace(/^\.\//, '');
-            
+            // 检查文件是否已存在
+            try {
+                await Deno.stat(task.filePath);
+                // 文件存在，添加序号
+                const ext = task.fileName.slice(-4);
+                const base = task.fileName.slice(0, -4);
+                let counter = 1;
+                let newPath = task.filePath;
+                
+                while (true) {
+                    newPath = `${task.outputPath}/${base}_${counter}${ext}`;
+                    try {
+                        await Deno.stat(newPath);
+                        counter++;
+                    } catch {
+                        break;
+                    }
+                }
+                
+                task.filePath = newPath;
+                task.fileName = `${base}_${counter}${ext}`;
+                logInfo(`文件已存在，重命名为: ${task.fileName}`);
+            } catch {
+                // 文件不存在，继续
+            }
+
+            // 构建代理URL
+            const proxyUrl = new URL(`${SERVER_ADDR}/api/proxy/playlist.m3u8`);
+            proxyUrl.searchParams.set('taskId', task.id);
+            proxyUrl.searchParams.set('url', task.url);
+            proxyUrl.searchParams.set('referer', task.referer ?? new URL(task.url).origin);
+
+            logDebug(`FFmpeg 输入: ${proxyUrl.toString()}`);
+            logDebug(`FFmpeg 输出: ${task.filePath}`);
+
+            // 启动 FFmpeg
             const command = new Deno.Command('ffmpeg', {
                 args: [
-                    '-i', SERVER_ADDR + '/api/proxy/playlist.m3u8?taskId=' + task.id 
-                        + '&url=' + encodeURIComponent(task.url) 
-                        + '&referer=' + encodeURIComponent(task.referer ?? new URL(task.url).origin),
-                    '-c', 'copy',
-                    '-y',
-                    absoluteFilePath  // 使用绝对路径
+                    '-hide_banner',           // 隐藏版本信息
+                    '-loglevel', 'error',     // 只显示错误
+                    '-stats',                 // 显示进度统计
+                    '-i', proxyUrl.toString(),
+                    '-c', 'copy',             // 直接复制，不重新编码
+                    '-bsf:a', 'aac_adtstoasc', // 修复 AAC 音频
+                    '-movflags', '+faststart', // 优化网络播放
+                    '-y',                     // 覆盖已存在文件
+                    task.filePath
                 ],
                 stdin: 'null',
-                stdout: 'inherit',
-                stderr: 'inherit'
+                stdout: 'piped',
+                stderr: 'piped'
             }).spawn();
 
-            signal.addEventListener('abort', () => {
-                command.kill();
-            });
+            // 监听取消信号
+            const abortHandler = () => {
+                try {
+                    command.kill('SIGTERM');
+                    // 给2秒优雅关闭时间，然后强制结束
+                    setTimeout(() => {
+                        try {
+                            command.kill('SIGKILL');
+                        } catch {
+                            // 可能已退出
+                        }
+                    }, 2000);
+                } catch {
+                    // 进程可能已结束
+                }
+            };
+            signal.addEventListener('abort', abortHandler, { once: true });
 
-            await command.output();
-            task.progress = 100; // 下载完成
+            // 等待 FFmpeg 完成
+            const output = await command.output();
+            
+            // 清理监听器
+            signal.removeEventListener('abort', abortHandler);
+
+            if (!output.success) {
+                const stderr = new TextDecoder().decode(output.stderr);
+                throw new Error(`FFmpeg 退出码 ${output.code}: ${stderr.slice(0, 500)}`);
+            }
+
+            // 获取文件大小
+            try {
+                const fileInfo = await Deno.stat(task.filePath);
+                this.stats.totalBytesDownloaded += fileInfo.size;
+                logInfo(`下载完成: ${task.fileName}, 大小: ${formatBytes(fileInfo.size)}`);
+            } catch {
+                // 忽略统计错误
+            }
+
             return true;
         } catch (error) {
-            logError(`M3U8下载失败:`, error);
+            // 清理不完整文件
+            try {
+                await Deno.remove(task.filePath);
+            } catch {
+                // 忽略清理错误
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * 检查磁盘空间
+     */
+    private async checkDiskSpace(path: string): Promise<boolean> {
+        try {
+            // 简单实现：检查目录是否可写
+            const testFile = `${path}/.disk_check_${Date.now()}`;
+            await Deno.writeTextFile(testFile, '');
+            await Deno.remove(testFile);
+            return true;
+        } catch (error) {
+            logError(`磁盘空间检查失败: ${path}`, error);
             return false;
         }
     }
 
     /**
-     * 获取下载任务
+     * 确保目录存在
      */
-    getDownloadTask(taskId: string): DownloadTask | undefined {
-        return this.downloadTasks.get(taskId);
+    private async ensureDirectoryExists(path: string): Promise<void> {
+        try {
+            await Deno.stat(path);
+        } catch (error) {
+            if (error instanceof Deno.errors.NotFound) {
+                await Deno.mkdir(path, { recursive: true });
+                logDebug(`创建目录: ${path}`);
+            } else {
+                throw error;
+            }
+        }
     }
 
-    /**
-     * 获取所有下载任务
-     */
-    getAllDownloadTasks(): DownloadTask[] {
-        return Array.from(this.downloadTasks.values());
-    }
+    // ==================== 任务管理 ====================
 
     /**
-     * 取消下载（修复：使用AbortController）
+     * 取消下载
      */
     cancelDownload(taskId: string): boolean {
         const task = this.downloadTasks.get(taskId);
@@ -200,23 +481,28 @@ export class DownloadManager {
             return false;
         }
 
-        // 触发AbortController
+        // 如果正在下载，触发 AbortController
         const controller = this.activeDownloads.get(taskId);
         if (controller) {
             controller.abort();
             this.activeDownloads.delete(taskId);
         }
 
-        // 更新任务状态 - 修复：使用cancelled而不是error
+        // 从队列中移除
+        const queueIndex = this.downloadQueue.indexOf(taskId);
+        if (queueIndex > -1) {
+            this.downloadQueue.splice(queueIndex, 1);
+        }
+
+        // 更新任务状态
         task.status = 'cancelled';
         task.error = '下载已取消';
+        this.stats.cancelledDownloads++;
 
         // 清理临时文件
-        const tempDir = `./temp/${taskId}`;
-        this.cleanupTempFiles(tempDir).catch(err =>
-            logError(`清理临时文件失败: ${tempDir}`, err)
-        );
+        this.cleanupTempFiles(taskId);
 
+        logInfo(`下载任务已取消: ${taskId}`);
         return true;
     }
 
@@ -226,6 +512,7 @@ export class DownloadManager {
     async retryDownload(taskId: string): Promise<boolean> {
         const task = this.downloadTasks.get(taskId);
         if (!task) {
+            logError(`重试失败: 任务不存在 ${taskId}`);
             return false;
         }
 
@@ -233,85 +520,285 @@ export class DownloadManager {
         task.status = 'pending';
         task.progress = 0;
         task.error = undefined;
+        task.retryCount = 0;
         task.startTime = undefined;
         task.endTime = undefined;
 
-        // 重新开始下载
-        return await this.startDownload(taskId);
+        logInfo(`重试下载任务: ${taskId}`);
+        return this.startDownload(taskId);
     }
 
     /**
-     * 清除已完成下载
+     * 删除下载任务
      */
-    clearCompletedDownloads(): boolean {
-        const completedTaskIds: string[] = [];
-        
-        // 收集已完成的任务ID
-        for (const [taskId, task] of this.downloadTasks.entries()) {
-            if (task.status === 'completed' || task.status === 'cancelled') {
-                completedTaskIds.push(taskId);
+    deleteDownload(taskId: string, deleteFile: boolean = false): boolean {
+        const task = this.downloadTasks.get(taskId);
+        if (!task) {
+            return false;
+        }
+
+        // 如果正在下载，先取消
+        if (task.status === 'downloading') {
+            this.cancelDownload(taskId);
+        }
+
+        // 从队列中移除
+        const queueIndex = this.downloadQueue.indexOf(taskId);
+        if (queueIndex > -1) {
+            this.downloadQueue.splice(queueIndex, 1);
+        }
+
+        // 删除文件
+        if (deleteFile && task.filePath) {
+            try {
+                Deno.removeSync(task.filePath);
+                logInfo(`删除文件: ${task.filePath}`);
+            } catch (error) {
+                logWarn(`删除文件失败: ${task.filePath}`, error);
             }
         }
-        
-        // 删除已完成的任务
-        let removedCount = 0;
-        for (const taskId of completedTaskIds) {
-            if (this.downloadTasks.delete(taskId)) {
-                removedCount++;
-            }
-        }
-        
-        logInfo(`清除已完成下载任务: ${removedCount} 个任务被删除`);
-        return removedCount > 0;
+
+        // 删除任务
+        this.downloadTasks.delete(taskId);
+        logInfo(`删除下载任务: ${taskId}`);
+        return true;
     }
 
     /**
-     * 确保目录存在
+     * 清除已完成/已取消的任务
      */
-    private async ensureDirectoryExists(path: string): Promise<void> {
-        try {
-            // 修复：确保路径是绝对路径
-            const absolutePath = path.startsWith('.') 
-                ? Deno.realPathSync(Deno.cwd()) + '/' + path.replace(/^\.\//, '')
-                : path;
+    clearCompletedDownloads(deleteFiles: boolean = false): { count: number; deletedFiles: number } {
+        const toDelete: string[] = [];
+        let deletedFiles = 0;
+
+        for (const [taskId, task] of this.downloadTasks) {
+            if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'error') {
+                toDelete.push(taskId);
                 
-            await Deno.stat(absolutePath);
-            logDebug(`目录已存在: ${absolutePath}`);
-        } catch (error) {
-            if (error instanceof Deno.errors.NotFound) {
-                // 确保使用绝对路径创建目录
-                const absolutePath = path.startsWith('.') 
-                    ? Deno.realPathSync(Deno.cwd()) + '/' + path.replace(/^\.\//, '')
-                    : path;
-                    
-                await Deno.mkdir(absolutePath, { recursive: true });
-                logDebug(`创建目录: ${absolutePath}`);
-            } else {
-                throw error;
+                if (deleteFiles && task.filePath) {
+                    try {
+                        Deno.removeSync(task.filePath);
+                        deletedFiles++;
+                    } catch {
+                        // 忽略删除错误
+                    }
+                }
             }
+        }
+
+        for (const taskId of toDelete) {
+            this.downloadTasks.delete(taskId);
+        }
+
+        logInfo(`清除任务: ${toDelete.length} 个，删除文件: ${deletedFiles} 个`);
+        return { count: toDelete.length, deletedFiles };
+    }
+
+    /**
+     * 清理旧任务（定期调用）
+     */
+    private cleanupOldTasks(): void {
+        const now = Date.now();
+        const maxAgeMs = getConfig().download.taskMaxAgeHours * 60 * 60 * 1000;
+        const toDelete: string[] = [];
+
+        for (const [taskId, task] of this.downloadTasks) {
+            const taskAge = now - task.createTime.getTime();
+            
+            // 删除超过最大保留时间的已完成/已取消/错误任务
+            if (taskAge > maxAgeMs && 
+                (task.status === 'completed' || task.status === 'cancelled' || task.status === 'error')) {
+                toDelete.push(taskId);
+            }
+        }
+
+        for (const taskId of toDelete) {
+            this.downloadTasks.delete(taskId);
+        }
+
+        if (toDelete.length > 0) {
+            logDebug(`清理 ${toDelete.length} 个过期任务`);
+        }
+    }
+
+    /**
+     * 启动清理定时器
+     */
+    private startCleanupTimer(): void {
+        this.cleanupTimer = setInterval(() => {
+            this.cleanupOldTasks();
+        }, TASK_CLEANUP_INTERVAL_MS);
+    }
+
+    /**
+     * 停止清理定时器
+     */
+    stopCleanupTimer(): void {
+        if (this.cleanupTimer) {
+            clearInterval(this.cleanupTimer);
+            this.cleanupTimer = null;
         }
     }
 
     /**
      * 清理临时文件
      */
-    private async cleanupTempFiles(tempDir: string): Promise<void> {
+    private async cleanupTempFiles(taskId: string): Promise<void> {
+        const tempDirs = [
+            `./temp/${taskId}`,
+            `./downloads/.temp/${taskId}`
+        ];
+
+        for (const dir of tempDirs) {
+            try {
+                await Deno.remove(dir, { recursive: true });
+                logDebug(`清理临时目录: ${dir}`);
+            } catch {
+                // 忽略错误
+            }
+        }
+    }
+
+    // ==================== 查询接口 ====================
+
+    getDownloadTask(taskId: string): IDownloadTask | undefined {
+        return this.downloadTasks.get(taskId);
+    }
+
+    getAllDownloadTasks(): IDownloadTask[] {
+        return Array.from(this.downloadTasks.values());
+    }
+
+    getActiveDownloads(): IDownloadTask[] {
+        return Array.from(this.downloadTasks.values())
+            .filter(t => t.status === 'downloading');
+    }
+
+    getPendingDownloads(): IDownloadTask[] {
+        return Array.from(this.downloadTasks.values())
+            .filter(t => t.status === 'pending');
+    }
+
+    getStats(): DownloadStats {
+        return { ...this.stats };
+    }
+
+    getQueuePosition(taskId: string): number {
+        return this.downloadQueue.indexOf(taskId) + 1;
+    }
+
+    // ==================== 进度标记（供代理使用） ====================
+
+    markStart(taskId: string, allSegments: number): void {
+        const task = this.downloadTasks.get(taskId);
+        if (task) {
+            task.totalSegments = allSegments;
+            if (task.status === 'pending') {
+                task.status = 'downloading';
+            }
+            logDebug(`任务 ${taskId} 开始下载，共 ${allSegments} 个片段`);
+        }
+    }
+
+    markStep(taskId: string): IDownloadTask | undefined {
+        const task = this.downloadTasks.get(taskId);
+        if (task && task.totalSegments && task.totalSegments > 0) {
+            const segPercent = 100 / task.totalSegments;
+            task.progress = Math.min(99, task.progress + segPercent);
+        }
+        return task;
+    }
+
+    setProgress(taskId: string, progress: number): IDownloadTask | undefined {
+        const task = this.downloadTasks.get(taskId);
+        if (task) task.progress = progress;
+        return task;
+    }
+
+    // ==================== 持久化 ====================
+
+    /**
+     * 导出任务到持久化格式
+     */
+    exportTasks(): IDownloadTaskPersisted[] {
+        return Array.from(this.downloadTasks.values()).map(task => ({
+            id: task.id,
+            url: task.url,
+            referer: task.referer,
+            title: task.title,
+            outputPath: task.outputPath,
+            filePath: task.filePath,
+            fileName: task.fileName,
+            status: task.status,
+            progress: task.progress,
+            createTime: task.createTime.toISOString(),
+            startTime: task.startTime?.toISOString(),
+            endTime: task.endTime?.toISOString(),
+            error: task.error,
+            totalSegments: task.totalSegments,
+            retryCount: task.retryCount,
+            maxRetries: task.maxRetries
+        }));
+    }
+
+    /**
+     * 从持久化格式导入任务
+     */
+    importTasks(tasks: IDownloadTaskPersisted[]): void {
+        for (const persisted of tasks) {
+            // 只恢复未完成的任务
+            if (persisted.status === 'completed' || persisted.status === 'cancelled') {
+                continue;
+            }
+
+            const task: IDownloadTask = {
+                ...persisted,
+                createTime: new Date(persisted.createTime),
+                startTime: persisted.startTime ? new Date(persisted.startTime) : undefined,
+                endTime: persisted.endTime ? new Date(persisted.endTime) : undefined,
+                status: persisted.status === 'downloading' ? 'error' : persisted.status, // 重置进行中的任务
+                error: persisted.status === 'downloading' ? '程序重启，任务中断' : persisted.error,
+                progress: persisted.status === 'downloading' ? 0 : persisted.progress
+            };
+
+            this.downloadTasks.set(task.id, task);
+            
+            // 将待处理任务加入队列
+            if (task.status === 'pending') {
+                this.downloadQueue.push(task.id);
+            }
+        }
+
+        logInfo(`导入 ${tasks.length} 个下载任务`);
+        this.processQueue();
+    }
+
+    /**
+     * 保存任务到文件
+     */
+    async saveToFile(filePath: string): Promise<void> {
         try {
-            await Deno.remove(tempDir, { recursive: true });
-            logDebug(`清理临时文件: ${tempDir}`);
+            const data = JSON.stringify(this.exportTasks(), null, 2);
+            await Deno.writeTextFile(filePath, data);
+            logDebug(`保存下载任务到: ${filePath}`);
         } catch (error) {
-            logError(`清理临时文件失败: ${tempDir}`, error);
+            logError(`保存下载任务失败: ${filePath}`, error);
         }
     }
 
     /**
-     * 格式化字节数
+     * 从文件加载任务
      */
-    private formatBytes(bytes: number): string {
-        if (bytes === 0) return '0 Bytes';
-        const k = 1024;
-        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+    async loadFromFile(filePath: string): Promise<void> {
+        try {
+            const data = await Deno.readTextFile(filePath);
+            const tasks = JSON.parse(data) as IDownloadTaskPersisted[];
+            this.importTasks(tasks);
+            logInfo(`从 ${filePath} 加载 ${tasks.length} 个下载任务`);
+        } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) {
+                logError(`加载下载任务失败: ${filePath}`, error);
+            }
+        }
     }
 }

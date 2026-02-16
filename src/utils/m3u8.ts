@@ -1,5 +1,5 @@
 import { logDebug, logError, logInfo } from "./logger.ts";
-import type { M3U8Manifest, M3U8Variant, M3U8Segment, M3U8MediaGroup, M3U8Result } from "../types/index.ts";
+import type { IM3U8Manifest, IM3U8Variant, IM3U8Segment, IM3U8MediaGroup, IM3U8Result } from "../types/index.ts";
 import { fetch2 } from "./fetch.ts";
 
 export class URLResolver {
@@ -63,11 +63,11 @@ export class M3U8Parser {
     /**
      * 解析M3U8主播放列表
      */
-    parseMasterPlaylist(content: string): M3U8Manifest {
+    parseMasterPlaylist(content: string): IM3U8Manifest {
         const lines = this.preprocessLines(content);
-        const manifest: M3U8Manifest = this.createEmptyManifest();
+        const manifest: IM3U8Manifest = this.createEmptyManifest();
 
-        let currentVariant: Partial<M3U8Variant> = {};
+        let currentVariant: Partial<IM3U8Variant> = {};
 
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
@@ -85,7 +85,7 @@ export class M3U8Parser {
                     continue;
                 }
 
-                manifest.variants!.push(currentVariant as M3U8Variant);
+                manifest.variants!.push(currentVariant as IM3U8Variant);
                 currentVariant = {};
             } else if (line.startsWith('#EXT-X-MEDIA:')) {
                 const mediaGroup = this.parseMedia(line);
@@ -106,13 +106,13 @@ export class M3U8Parser {
     /**
      * 解析M3U8媒体播放列表
      */
-    parseMediaPlaylist(content: string): M3U8Manifest {
+    parseMediaPlaylist(content: string): IM3U8Manifest {
         const lines = this.preprocessLines(content);
         const manifest = this.createEmptyManifest();
 
-        let currentSegment: Partial<M3U8Segment> = {};
-        let currentKey: M3U8Segment['key'];
-        let currentMap: M3U8Segment['map'];
+        let currentSegment: Partial<IM3U8Segment> = {};
+        let currentKey: IM3U8Segment['key'];
+        let currentMap: IM3U8Segment['map'];
         let expectSegmentUri = false;
 
         for (let i = 0; i < lines.length; i++) {
@@ -151,7 +151,7 @@ export class M3U8Parser {
                 if (currentKey?.uri) currentSegment.key = currentKey;
                 if (currentMap) currentSegment.map = currentMap;
 
-                manifest.segments.push(currentSegment as M3U8Segment);
+                manifest.segments.push(currentSegment as IM3U8Segment);
 
                 // 重置
                 currentSegment = {};
@@ -198,7 +198,7 @@ export class M3U8Parser {
         return line.startsWith('#');
     }
 
-    private createEmptyManifest(): M3U8Manifest {
+    private createEmptyManifest(): IM3U8Manifest {
         return {
             version: 3,
             targetDuration: 60,
@@ -219,7 +219,7 @@ export class M3U8Parser {
         };
     }
 
-    private parseStreamInf(line: string): Partial<M3U8Variant> {
+    private parseStreamInf(line: string): Partial<IM3U8Variant> {
         const attrs = this.parseAttributes(line);
         const resolution = attrs.RESOLUTION ? this.parseResolution(attrs.RESOLUTION) : undefined;
 
@@ -238,7 +238,7 @@ export class M3U8Parser {
         };
     }
 
-    private parseKey(line: string): M3U8Segment['key'] {
+    private parseKey(line: string): IM3U8Segment['key'] {
         const attrs = this.parseAttributes(line);
 
         // 即使METHOD缺失也应保留其他可能的属性
@@ -251,7 +251,7 @@ export class M3U8Parser {
         };
     }
 
-    private parseMap(line: string): M3U8Segment['map'] {
+    private parseMap(line: string): IM3U8Segment['map'] {
         const attrs = this.parseAttributes(line);
         if (!attrs.URI) return undefined;
 
@@ -261,9 +261,9 @@ export class M3U8Parser {
         };
     }
 
-    private parseMedia(line: string): M3U8MediaGroup | null {
+    private parseMedia(line: string): IM3U8MediaGroup | null {
         const attrs = this.parseAttributes(line);
-        const type = attrs.TYPE as M3U8MediaGroup['type'];
+        const type = attrs.TYPE as IM3U8MediaGroup['type'];
 
         if (!type || !attrs.GROUP_ID || !attrs.NAME) {
             logDebug('Invalid EXT-X-MEDIA tag: missing required attributes');
@@ -322,7 +322,7 @@ export class M3U8Service {
     /**
      * 获取并解析M3U8
      */
-    static async fetchManifest(url: string): Promise<M3U8Manifest> {
+    static async fetchManifest(url: string): Promise<IM3U8Manifest> {
         try {
             logInfo(`Fetching M3U8: ${url}`);
 
@@ -364,7 +364,7 @@ export class M3U8Service {
     /**
      * 将Manifest序列化为M3U8内容
      */
-    static serializeManifest(manifest: M3U8Manifest, additionalQuery?: Record<string, string | undefined>): string {
+    static serializeManifest(manifest: IM3U8Manifest, additionalQuery?: Record<string, string | undefined>): string {
         const lines: string[] = ['#EXTM3U'];
         const addQuery = Object.entries(additionalQuery || {})
             .filter(([_, v]) => v)
@@ -396,7 +396,7 @@ export class M3U8Service {
 
         // 片段（媒体播放列表）
         if (manifest.segments?.length) {
-            let lastKey: M3U8Segment['key'] | undefined = undefined;
+            let lastKey: IM3U8Segment['key'] | undefined = undefined;
 
             for (const segment of manifest.segments) {
                 // 检查KEY是否发生变化
@@ -425,9 +425,9 @@ export class M3U8Service {
                 // 片段信息
                 lines.push(`#EXTINF:${segment.duration.toFixed(3)}${segment.title ? ',' + segment.title : ''}`);
                 if (addQuery)
-                    lines.push('/api/proxy/chunk.ts?url=' + encodeURIComponent(segment.uri) + '&' + addQuery);
+                    lines.push('/api/proxy/chunk.ts?type=ts&url=' + encodeURIComponent(segment.uri) + '&' + addQuery);
                 else
-                    lines.push('/api/proxy/chunk.ts?url=' + encodeURIComponent(segment.uri));
+                    lines.push('/api/proxy/chunk.ts?type=ts&url=' + encodeURIComponent(segment.uri));
             }
         }
 
@@ -439,7 +439,7 @@ export class M3U8Service {
         return lines.join('\n');
     }
 
-    private static buildVariantAttrs(variant: M3U8Variant): string {
+    private static buildVariantAttrs(variant: IM3U8Variant): string {
         const attrs: string[] = [
             `BANDWIDTH=${variant.bandwidth}`,
         ];
@@ -461,7 +461,7 @@ export class M3U8Service {
         return attrs.join(',');
     }
 
-    private static buildKeyAttrs(key: NonNullable<M3U8Segment['key']>, addQuery?: string): string {
+    private static buildKeyAttrs(key: NonNullable<IM3U8Segment['key']>, addQuery?: string): string {
         const attrs: string[] = [];
 
         if (key.method) {
@@ -492,7 +492,7 @@ export class M3U8Service {
         return attrs.join(',');
     }
 
-    private static buildMapAttrs(map: NonNullable<M3U8Segment['map']>, addQuery?: string): string { 
+    private static buildMapAttrs(map: NonNullable<IM3U8Segment['map']>, addQuery?: string): string { 
         let uri = map.uri;
         if (addQuery)
             uri = '/api/proxy/map?url=' + encodeURIComponent(uri) + '&' + addQuery;
@@ -516,7 +516,7 @@ export class M3U8Service {
             .join('');
     }
 
-    private static isSameKey(key1: M3U8Segment['key'] | undefined, key2: M3U8Segment['key'] | undefined): boolean {
+    private static isSameKey(key1: IM3U8Segment['key'] | undefined, key2: IM3U8Segment['key'] | undefined): boolean {
         if (!key1 && !key2) return true;
         if (!key1 || !key2) return false;
 
@@ -571,7 +571,7 @@ export class M3U8Service {
     /**
      * 推断质量等级
      */
-    private static inferQuality(variant: M3U8Variant): string {
+    private static inferQuality(variant: IM3U8Variant): string {
         if (!variant.resolution) return 'unknown';
         const height = variant.resolution.height;
 
@@ -586,7 +586,7 @@ export class M3U8Service {
     /**
    * 向后兼容：fetchAndParseM3U8（解析主播放列表）
    */
-    static async fetchAndParseM3U8(url: string): Promise<M3U8Result[]> {
+    static async fetchAndParseM3U8(url: string): Promise<IM3U8Result[]> {
         try {
             logInfo(`Fetching master playlist: ${url}`);
 
@@ -611,7 +611,7 @@ export class M3U8Service {
     /**
      * 向后兼容：fetchAndParseM3U8Segments（解析媒体播放列表）
      */
-    static async fetchAndParseM3U8Segments(url: string): Promise<M3U8Segment[]> {
+    static async fetchAndParseM3U8Segments(url: string): Promise<IM3U8Segment[]> {
         try {
             logInfo(`Fetching media playlist: ${url}`);
 

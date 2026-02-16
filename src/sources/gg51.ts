@@ -1,5 +1,5 @@
-import { BaseVideoSource, ImageData } from './base.ts';
-import { VideoItem, VideoList, M3U8Result } from '../types/index.ts';
+import { BaseVideoSource, ImageData } from './index.ts';
+import { IVideoItem, IVideoList, IM3U8Result } from '../types/index.ts';
 import { fetch2, getImage as fetchImage, findAvailableFast } from '../utils/fetch.ts';
 import { Document, DOMParser } from "dom";
 import { logError, logInfo } from "../utils/logger.ts";
@@ -55,7 +55,7 @@ export default class GG51VideoSource extends BaseVideoSource {
     }
 
     // 获取主页视频列表
-    async getHomeVideos(page: number = 1): Promise<VideoList> {
+    async getHomeVideos(page: number = 1): Promise<IVideoList> {
         // 确保已经初始化
         if (!this.resolvedBaseUrl) {
             throw new Error('视频源未初始化，请先调用 init() 方法');
@@ -84,10 +84,10 @@ export default class GG51VideoSource extends BaseVideoSource {
         }
     }
 
-    private parsePage(document: Document): VideoItem[] {
+    private parsePage(document: Document): IVideoItem[] {
         // 提取视频列表
         const videoElements = document.querySelectorAll('.videolist a.one');
-        const videos: VideoItem[] = [];
+        const videos: IVideoItem[] = [];
 
         for (const element of videoElements) {
             // 跳过广告链接
@@ -145,7 +145,7 @@ export default class GG51VideoSource extends BaseVideoSource {
         });
 
         const data = await response.json();
-        const videos: VideoItem[] = [];
+        const videos: IVideoItem[] = [];
 
         // 解析返回的内容
         if (data.listData) for (const item of (data.listData as GG51VideoItem[])) {
@@ -162,7 +162,7 @@ export default class GG51VideoSource extends BaseVideoSource {
     }
 
     // 通过API加载更多视频
-    async loadMoreVideos(page: number): Promise<VideoList> {
+    async loadMoreVideos(page: number): Promise<IVideoList> {
         try {
             // 获取首页以找到loadMore2函数中的id
             const homeUrl = this.resolvedBaseUrl;
@@ -172,7 +172,7 @@ export default class GG51VideoSource extends BaseVideoSource {
             const loadMoreMatches = encodedPage.match(/loadMore2\((\d+),\s*\$\(this\)\)/g);
             assert(loadMoreMatches && loadMoreMatches.length > 0, '未找到loadMore2调用');
 
-            const videos: VideoItem[] = [];
+            const videos: IVideoItem[] = [];
             for (const match of loadMoreMatches) {
                 const idMatch = match.match(/loadMore2\((\d+),/);
                 if (idMatch) {
@@ -201,7 +201,7 @@ export default class GG51VideoSource extends BaseVideoSource {
     }
 
     // 搜索视频
-    async searchVideos(query: string, page: number = 1): Promise<VideoList> {
+    async searchVideos(query: string, page: number = 1): Promise<IVideoList> {
         // 构建搜索URL，支持分页
         let searchUrl = new URL(`/search/${encodeURIComponent(query)}`, this.resolvedBaseUrl).href;
         if (page > 1) {
@@ -223,7 +223,7 @@ export default class GG51VideoSource extends BaseVideoSource {
     }
 
     // 解析视频链接获取M3U8
-    async parseVideoUrl(url: string): Promise<M3U8Result[]> {
+    async parseVideoUrl(url: string): Promise<IM3U8Result[]> {
         const fullUrl = new URL(url, this.resolvedBaseUrl).href;
 
         // 解析重定向后的页面内容
@@ -246,7 +246,7 @@ export default class GG51VideoSource extends BaseVideoSource {
     }
 
     // 获取图片数据
-    async getImage(originalUrl: string): Promise<ImageData> {
+    override async getImage(originalUrl: string): Promise<ImageData> {
         // 使用URL构造函数正确处理相对路径
         let imageUrl = new URL(originalUrl, this.resolvedBaseUrl).href;
 

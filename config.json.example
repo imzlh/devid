@@ -1,0 +1,28 @@
+{
+  "server": {
+    "port": 9876,
+    "verboseLogging": false,
+    "dataDir": "./data"
+  },
+  "videoSource": {
+    "initTimeoutMs": 15000,
+    "initRetryAttempts": 2,
+    "initRetryDelayMs": 1000,
+    "healthCheckIntervalMs": 60000,
+    "circuitBreakerThreshold": 5,
+    "circuitBreakerResetMs": 300000
+  },
+  "download": {
+    "timeoutMs": 1800000,
+    "maxConcurrent": 3,
+    "minDiskFreeMB": 100,
+    "retryAttempts": 2,
+    "retryDelayMs": 5000,
+    "taskMaxAgeHours": 24,
+    "defaultOutputPath": "./downloads"
+  },
+  "proxy": {
+    "timeoutMs": 30000,
+    "maxRetries": 3
+  }
+}

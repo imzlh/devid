@@ -2,13 +2,13 @@
  * SM-API Weiaona 视频源
  * 完整实现：跳板跳转 → CONFIG解密 → API调用
  */
-import { BaseVideoSource, ImageData } from './base.ts';
-import { VideoItem, VideoList, M3U8Result } from '../types/index.ts';
+import { BaseVideoSource, ImageData } from './index.ts';
+import { IVideoItem, IVideoList, IM3U8Result } from '../types/index.ts';
 import { fetch2, getImage as fetchImage, findAvailableFast } from '../utils/fetch.ts';
 import { Document, DOMParser } from "dom";
 import { logError, logInfo } from "../utils/logger.ts";
 import assert from "node:assert";
-import { createHmac, createDecipheriv } from "node:crypto";
+import { createDecipheriv } from "node:crypto";
 import { Buffer } from "node:buffer";
 
 // ==================== 解密核心 ====================
@@ -17,7 +17,7 @@ interface TokenSecret {
     signingKeyHex: string;     // 32字节 -> 64 hex chars
 }
 
-function decryptToken2(b64: string, secret: TokenSecret): Buffer {
+async function decryptToken2(b64: string, secret: TokenSecret): Promise<Buffer> {
     const buf = Buffer.from(b64, "base64");
 
     // 字段长度（字节）
@@ -42,17 +42,24 @@ function decryptToken2(b64: string, secret: TokenSecret): Buffer {
         throw new Error("invalid version");
     }
 
-    // HMAC-SHA256 校验
+    // HMAC-SHA256 校验（使用 Web Crypto API 避免弃用警告）
+    // 注：此校验非阻塞，失败仅记录日志
     try {
         const hmacPayload = Buffer.concat([Buffer.from(timeBuf), Buffer.from(iv), Buffer.from(cipher)]);
-        const expected = createHmac("sha256", Buffer.from(secret.signingKeyHex, "hex"))
-            .update(hmacPayload)
-            .digest();
+        const key = await crypto.subtle.importKey(
+            "raw",
+            Buffer.from(secret.signingKeyHex, "hex"),
+            { name: "HMAC", hash: "SHA-256" },
+            false,
+            ["sign"]
+        );
+        const signature = await crypto.subtle.sign("HMAC", key, hmacPayload);
+        const expected = new Uint8Array(signature);
         if (!hmacSig.every((v, i) => v === expected[i])) {
             logInfo("HMAC mismatch (continuing anyway per user request)");
         }
     } catch (e) {
-        logInfo("HMAC validation skipped due to error:", e);
+        logInfo("HMAC validation skipped:", e);
     }
 
     // AES-256-CBC 解密
@@ -68,8 +75,9 @@ function decryptToken2(b64: string, secret: TokenSecret): Buffer {
     ])
 }
 
-function decryptToken(b64: string, secret: TokenSecret): string {
-    return decryptToken2(b64, secret).toString("utf-8");
+async function decryptToken(b64: string, secret: TokenSecret): Promise<string> {
+    const buf = await decryptToken2(b64, secret);
+    return buf.toString("utf-8");
 }
 
 // ==================== 视频源实现 ====================
@@ -129,9 +137,28 @@ export default class SMWeiaonaVideoSource extends BaseVideoSource {
         logInfo(`[${this.sourceId}] 开始初始化跳转链...`);
 
         // Step 1: 123kpdz.com -> 获取跳转URL
-        const step1Html = await (await fetch2(this.baseUrl)).text();
-        const step1Match = this.sandbox(step1Html, this.baseUrl);
-        assert(step1Match, 'Step 1: 无法解析跳转URL');
+        let step1Match;
+        const tried: number[] = [];
+        while(true) try{
+            let i;
+            do
+                i = Math.ceil(Math.random() * 200);
+            while (tried.length < 100 && tried.includes(i));
+            tried.push(i);
+
+            const url = `https://${i}kpdz.com`;
+            logInfo('尝试:', url);
+            const step1Html = await (await fetch2(url, {
+                noRetry: true
+            })).text();
+            step1Match = this.sandbox(step1Html, url);
+            if(step1Match) break;
+        } catch (e) {
+            logInfo('失败:', e);
+        }
+        if (!step1Match) {
+            throw new Error('尝试了100次，没有成功进入');
+        }
         
         // Step2: 访问地址
         const step2Html = await (await fetch2(step1Match)).text();
@@ -160,7 +187,7 @@ export default class SMWeiaonaVideoSource extends BaseVideoSource {
 
         // Step 5: 解密CONFIG
         const encryptedConfig = configMatch[1];
-        const decryptedJson = decryptToken(encryptedConfig, this.secret);
+        const decryptedJson = await decryptToken(encryptedConfig, this.secret);
         this.config = JSON.parse(decryptedJson);
 
         assert(this.config?.api_url, '解密失败: 缺少api_url');
@@ -176,7 +203,7 @@ export default class SMWeiaonaVideoSource extends BaseVideoSource {
     }
 
     // 获取首页视频
-    async getHomeVideos(page: number = 1): Promise<VideoList> {
+    async getHomeVideos(page: number = 1): Promise<IVideoList> {
         assert(this.config, '视频源未初始化');
 
         const url = new URL('/api/vod/video', this.resolvedBaseUrl);
@@ -188,7 +215,7 @@ export default class SMWeiaonaVideoSource extends BaseVideoSource {
 
         logInfo(`[${this.sourceId}] 获取首页: ${url.href}`);
         const response = await fetch2(url.href);
-        const data = JSON.parse(decryptToken((await response.json())['x-data'], this.secret));
+        const data = JSON.parse(await decryptToken((await response.json())['x-data'], this.secret));
 
         return {
             videos: this.parseVideoList(data.data.items),
@@ -198,7 +225,7 @@ export default class SMWeiaonaVideoSource extends BaseVideoSource {
     }
 
     // 搜索视频
-    async searchVideos(query: string, page: number = 1): Promise<VideoList> {
+    async searchVideos(query: string, page: number = 1): Promise<IVideoList> {
         assert(this.config, '视频源未初始化');
 
         const url = new URL('/search/vod/', this.resolvedBaseUrl);
@@ -208,7 +235,7 @@ export default class SMWeiaonaVideoSource extends BaseVideoSource {
 
         logInfo(`[${this.sourceId}] 搜索: ${query}, 第${page}页`);
         const response = await fetch2(url.href);
-        const data = JSON.parse(decryptToken((await response.json())['x-data'], this.secret));
+        const data = JSON.parse(await decryptToken((await response.json())['x-data'], this.secret));
 
         // 搜索接口返回结构可能不同，做兼容处理
         const items = data.data?.items || data.items || [];
@@ -220,7 +247,7 @@ export default class SMWeiaonaVideoSource extends BaseVideoSource {
     }
 
     // 按标签获取视频
-    async getVideosByTag(tagId: number, page: number = 1): Promise<VideoList> {
+    async getVideosByTag(tagId: number, page: number = 1): Promise<IVideoList> {
         assert(this.config, '视频源未初始化');
 
         const url = new URL('/api/vod/video', this.resolvedBaseUrl);
@@ -232,7 +259,7 @@ export default class SMWeiaonaVideoSource extends BaseVideoSource {
 
         logInfo(`[${this.sourceId}] 获取标签 ${tagId} 第${page}页`);
         const response = await fetch2(url.href);
-        const data = JSON.parse(decryptToken((await response.json())['x-data'], this.secret));
+        const data = JSON.parse(await decryptToken((await response.json())['x-data'], this.secret));
 
         return {
             videos: this.parseVideoList(data.data.items),
@@ -242,7 +269,7 @@ export default class SMWeiaonaVideoSource extends BaseVideoSource {
     }
 
     // 解析视频列表
-    private parseVideoList(items: any[]): VideoItem[] {
+    private parseVideoList(items: any[]): IVideoItem[] {
         assert(this.config, '视频源未初始化');
 
         // 选择第一条可用线路
@@ -269,7 +296,7 @@ export default class SMWeiaonaVideoSource extends BaseVideoSource {
     }
 
     // 解析视频播放URL（M3U8）
-    async parseVideoUrl(fullUrl: string): Promise<M3U8Result[]> {
+    async parseVideoUrl(fullUrl: string): Promise<IM3U8Result[]> {
         assert(this.config, '视频源未初始化');
         logInfo(`[${this.sourceId}] 解析视频: ${fullUrl}`);
 
@@ -298,13 +325,13 @@ export default class SMWeiaonaVideoSource extends BaseVideoSource {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             }
         });
-        const data = JSON.parse(decryptToken((await response.json())['x-data'], this.secret));
+        const data = JSON.parse(await decryptToken((await response.json())['x-data'], this.secret));
 
         return data.data?.items || [];
     }
 
     // 获取图片
-    async getImage(originalUrl: string): Promise<ImageData> {
+    override async getImage(originalUrl: string): Promise<ImageData> {
         assert(this.config, '视频源未初始化');
 
         const imageUrl = this.buildImageUrl(originalUrl);
@@ -317,7 +344,7 @@ export default class SMWeiaonaVideoSource extends BaseVideoSource {
             }
         });
         const txt = (await imageData.text()).split('@@@');
-        const data = decryptToken(txt[0], this.secret) + txt[1];
+        const data = (await decryptToken(txt[0], this.secret)) + txt[1];
 
         return {
             data: await (await fetch(data)).bytes(),

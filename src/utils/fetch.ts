@@ -42,6 +42,10 @@ export async function getDocument(
     url: string,
     options: FetchOptions = {}
 ): Promise<Document> {
+    if (typeof options.referrer == 'string' && options.headers) {
+        // @ts-ignore - set referer
+        options.headers.Referer = options.referrer;
+    }
     const response = await fetch2(url, {
         ...options,
         headers: {
@@ -387,7 +391,7 @@ export async function getCookies(domain: string): Promise<Cookie[]> {
 export async function getImage(
     url: string,
     options: RequestInit = {}
-): Promise<import("../sources/base.ts").ImageData> {
+): Promise<import("../sources/index.ts").ImageData> {
     try {
         const response = await fetch2(url, options);
 

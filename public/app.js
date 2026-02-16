@@ -36,6 +36,21 @@ class VideoManager {
         /** @type {boolean} */
         this.isInitialized = false;
         
+        /** @type {Object|null} 当前正在播放的系列视频 */
+        this.currentSeriesVideo = null;
+        /** @type {Array} 当前剧集列表 */
+        this.currentEpisodes = [];
+        
+        /** @type {Object} 页面数据缓存 */
+        this.pageCache = {
+            home: { loaded: false, timestamp: 0 },
+            search: { loaded: false, timestamp: 0 },
+            downloads: { loaded: false, timestamp: 0 },
+            sources: { loaded: false, timestamp: 0 }
+        };
+        /** @type {number} 缓存有效期（毫秒）- 5分钟 */
+        this.cacheTTL = 5 * 60 * 1000;
+        
         this.init();
     }
     
@@ -311,11 +326,16 @@ class VideoManager {
      */
     bindKeyboardEvents() {
         DOMHelper.on(document, 'keydown', (e) => {
-            // ESC 关闭模态框
+            // ESC 关闭模态框或返回选集
             if (e.key === 'Escape') {
                 const modal = DOMHelper.$('#videoModal');
                 if (modal && !modal.classList.contains('hidden')) {
-                    this.closeVideoModal();
+                    // 如果正在播放系列剧集（player存在且currentSeriesVideo存在），返回选集页面
+                    if (this.currentSeriesVideo && this.playerManager.player) {
+                        this.backToEpisodes();
+                    } else {
+                        this.closeVideoModal();
+                    }
                 }
             }
             
@@ -338,6 +358,9 @@ class VideoManager {
                     this.switchPage(pages[pageIndex]);
                 }
             }
+            
+            // 左右箭头键留给播放器控制快进/后退
+            // 上一集/下一集使用 ArtPlayer 内置的控件按钮
         });
     }
     
@@ -381,25 +404,89 @@ class VideoManager {
     }
     
     /**
-     * 加载页面数据
+     * 检查页面数据是否需要加载
+     * @param {PageType} page
+     * @returns {boolean}
+     */
+    shouldLoadPageData(page) {
+        // 下载页面始终刷新（状态变化快）
+        if (page === 'downloads') {
+            return true;
+        }
+        
+        const cache = this.pageCache[page];
+        if (!cache) return true;
+        
+        // 未加载过或缓存已过期
+        const now = Date.now();
+        if (!cache.loaded || (now - cache.timestamp) > this.cacheTTL) {
+            return true;
+        }
+        
+        return false;
+    }
+    
+    /**
+     * 标记页面已加载
      * @param {PageType} page
      */
-    async loadPageData(page) {
+    markPageLoaded(page) {
+        if (this.pageCache[page]) {
+            this.pageCache[page].loaded = true;
+            this.pageCache[page].timestamp = Date.now();
+        }
+    }
+    
+    /**
+     * 清除页面缓存
+     * @param {PageType} page - 指定页面，不指定则清除全部
+     */
+    clearPageCache(page) {
+        if (page) {
+            if (this.pageCache[page]) {
+                this.pageCache[page].loaded = false;
+                this.pageCache[page].timestamp = 0;
+            }
+        } else {
+            // 清除全部
+            for (const key of Object.keys(this.pageCache)) {
+                this.pageCache[key].loaded = false;
+                this.pageCache[key].timestamp = 0;
+            }
+        }
+    }
+    
+    /**
+     * 加载页面数据
+     * @param {PageType} page
+     * @param {boolean} forceRefresh - 是否强制刷新
+     */
+    async loadPageData(page, forceRefresh = false) {
         try {
+            // 检查是否需要加载（强制刷新或缓存过期）
+            if (!forceRefresh && !this.shouldLoadPageData(page)) {
+                console.log(`页面 ${page} 数据仍在缓存中，跳过加载`);
+                return;
+            }
+            
             switch (page) {
                 case 'home':
                     await this.loadHomePage();
+                    this.markPageLoaded('home');
                     break;
                 case 'search':
                     if (this.searchQuery) {
                         await this.loadSearchResults();
+                        this.markPageLoaded('search');
                     }
                     break;
                 case 'downloads':
                     await this.loadDownloads();
+                    // 下载页面不标记缓存，每次都要刷新
                     break;
                 case 'sources':
                     await this.loadSources();
+                    this.markPageLoaded('sources');
                     break;
             }
         } catch (error) {
@@ -528,6 +615,10 @@ class VideoManager {
             await this.loadActiveSource();
             await this.loadSources();
             
+            // 切换视频源后清除首页和搜索缓存
+            this.clearPageCache('home');
+            this.clearPageCache('search');
+            
             // 重新加载当前页面数据并刷新页面
             await this.reloadCurrentPage();
             
@@ -599,6 +690,8 @@ class VideoManager {
         }
         
         this.searchQuery = query;
+        // 新搜索清除缓存
+        this.clearPageCache('search');
         this.switchPage('search');
         this.saveToHash(); // 保存搜索状态到哈希
         await this.loadSearchResults();
@@ -660,11 +753,18 @@ class VideoManager {
      */
     createVideoCard(video) {
         const card = DOMHelper.create('div', 'video-card');
+        const isSeries = video.contentType === 'series';
         
         // 处理缩略图
         const thumbnailUrl = video.thumbnail ? 
             this.api.getImageProxyUrl(video.thumbnail, video.source) : 
             this.getDefaultThumbnail();
+        
+        // 检查播放进度
+        let progressBadge = '';
+        if (isSeries && video.seriesInfo?.currentEpisode) {
+            progressBadge = `<div class="series-progress">看到第${video.seriesInfo.currentEpisode}集</div>`;
+        }
         
         card.innerHTML = `
             <div class="video-thumbnail">
@@ -673,18 +773,24 @@ class VideoManager {
                      loading="lazy"
                      onerror="this.src='${this.getDefaultThumbnail()}'">
                 <div class="video-duration">${video.duration || '未知'}</div>
+                ${isSeries ? '<div class="series-badge">系列</div>' : ''}
+                ${progressBadge}
                 <div class="video-actions-overlay">
-                    <button class="btn btn-large btn-primary video-preview-btn" title="预览">
-                        <i class="fas fa-play"></i>
+                    <button class="btn btn-large btn-primary video-preview-btn" title="${isSeries ? '选集播放' : '预览'}">
+                        <i class="fas ${isSeries ? 'fa-list' : 'fa-play'}"></i>
                     </button>
+                    ${!isSeries ? `
                     <button class="btn btn-large btn-success video-download-btn" title="直接下载">
                         <i class="fas fa-download"></i>
                     </button>
+                    ` : ''}
                 </div>
             </div>
             <div class="video-info">
                 <div class="video-title">${video.title}</div>
-                <div class="video-meta">来源: ${video.source}</div>
+                <div class="video-meta">
+                    ${isSeries ? `系列 · ${video.seriesInfo?.totalEpisodes || '?'}集` : `来源: ${video.source}`}
+                </div>
             </div>
         `;
         
@@ -692,26 +798,501 @@ class VideoManager {
         const previewBtn = card.querySelector('.video-preview-btn');
         if (previewBtn) {
             DOMHelper.on(previewBtn, 'click', (e) => {
-                e.stopPropagation(); // 阻止事件冒泡
+                e.stopPropagation();
+                e.preventDefault();
+                if (isSeries) {
+                    this.showSeriesModal(video);
+                } else {
+                    this.showVideoModal(video);
+                }
+            });
+        }
+        
+        // 绑定下载按钮点击事件（仅视频）
+        if (!isSeries) {
+            const downloadBtn = card.querySelector('.video-download-btn');
+            if (downloadBtn) {
+                DOMHelper.on(downloadBtn, 'click', (e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    this.directDownload(video);
+                });
+            }
+        }
+        
+        // 绑定卡片点击事件 - 只对非按钮区域生效
+        DOMHelper.on(card, 'click', (e) => {
+            // 如果点击的是按钮或按钮内的元素，不处理
+            if (e.target.closest('.video-actions-overlay button') || 
+                e.target.closest('.video-preview-btn') ||
+                e.target.closest('.video-download-btn')) {
+                return;
+            }
+            if (isSeries) {
+                this.showSeriesModal(video);
+            } else {
                 this.showVideoModal(video);
-            });
-        }
-        
-        // 绑定下载按钮点击事件
-        const downloadBtn = card.querySelector('.video-download-btn');
-        if (downloadBtn) {
-            DOMHelper.on(downloadBtn, 'click', (e) => {
-                e.stopPropagation(); // 阻止事件冒泡
-                this.directDownload(video);
-            });
-        }
-        
-        // 绑定卡片点击事件（预览）
-        DOMHelper.on(card, 'click', () => {
-            this.showVideoModal(video);
+            }
         });
         
         return card;
+    }
+    
+    /**
+     * 显示系列详情模态框（选集）
+     * @param {VideoItem} seriesVideo
+     */
+    async showSeriesModal(seriesVideo) {
+        const modal = DOMHelper.$('#videoModal');
+        const modalTitle = DOMHelper.$('#modalTitle');
+        const videoPlayer = DOMHelper.$('#videoPlayer');
+        const videoDetailInfo = DOMHelper.$('#videoDetailInfo');
+        const qualitySelection = DOMHelper.$('#qualitySelection');
+        
+        if (!modal || !modalTitle || !videoPlayer || !videoDetailInfo) return;
+        
+        // 清理播放器状态，确保显示选集页面而不是直接播放
+        this.playerManager.destroy();
+        this.currentSeriesVideo = seriesVideo;
+        this.currentEpisodes = [];
+        
+        modalTitle.textContent = seriesVideo.title;
+        videoPlayer.innerHTML = '<div class="loading-placeholder"><i class="fas fa-spinner fa-spin"></i><span>加载系列信息...</span></div>';
+        videoDetailInfo.innerHTML = '';
+        qualitySelection.innerHTML = '';
+        
+        DOMHelper.show(modal);
+        
+        try {
+            this.showLoading();
+            const detail = await this.api.getSeriesDetail(seriesVideo.id);
+            
+            if (!detail || !detail.episodes || detail.episodes.length === 0) {
+                videoPlayer.innerHTML = '<div class="loading-placeholder"><i class="fas fa-exclamation-circle"></i><span>暂无剧集信息</span></div>';
+                return;
+            }
+            
+            // 保存当前系列和剧集列表
+            this.currentSeriesVideo = seriesVideo;
+            this.currentEpisodes = detail.episodes;
+            
+            // 渲染系列信息（左侧）
+            const thumbnailUrl = seriesVideo.thumbnail ? 
+                this.api.getImageProxyUrl(seriesVideo.thumbnail, seriesVideo.source) : 
+                this.getDefaultThumbnail();
+            
+            videoDetailInfo.innerHTML = `
+                <div class="series-detail-card">
+                    <div class="series-poster">
+                        <img src="${thumbnailUrl}" alt="${detail.title}" onerror="this.src='${this.getDefaultThumbnail()}'">
+                    </div>
+                    <div class="series-info-content">
+                        <h3 class="series-title">${detail.title}</h3>
+                        ${detail.originalTitle ? `<p class="series-original-title">${detail.originalTitle}</p>` : ''}
+                        <div class="series-meta-tags">
+                            ${detail.type ? `<span class="meta-tag type-tag"><i class="fas fa-film"></i> ${this.getTypeText(detail.type)}</span>` : ''}
+                            ${detail.status ? `<span class="meta-tag status-tag ${detail.status}"><i class="fas fa-circle"></i> ${this.getStatusText(detail.status)}</span>` : ''}
+                            ${detail.year ? `<span class="meta-tag"><i class="fas fa-calendar"></i> ${detail.year}</span>` : ''}
+                            ${detail.rating ? `<span class="meta-tag rating-tag"><i class="fas fa-star"></i> ${detail.rating}</span>` : ''}
+                        </div>
+                        <div class="series-stats">
+                            <span><i class="fas fa-list-ol"></i> 共 ${detail.totalEpisodes} 集</span>
+                            ${detail.views ? `<span><i class="fas fa-eye"></i> ${this.formatViews(detail.views)}</span>` : ''}
+                        </div>
+                        ${detail.tags && detail.tags.length > 0 ? `
+                        <div class="series-tags">
+                            ${detail.tags.map(tag => `<span class="tag">${tag}</span>`).join('')}
+                        </div>
+                        ` : ''}
+                        ${detail.description ? `
+                        <div class="series-description">
+                            <p>${detail.description}</p>
+                        </div>
+                        ` : ''}
+                    </div>
+                </div>
+            `;
+            
+            // 渲染剧集列表（右侧播放器区域）
+            videoPlayer.innerHTML = `
+                <div class="episodes-container">
+                    <div class="episodes-header">
+                        <h4><i class="fas fa-play-circle"></i> 选集播放</h4>
+                        <div class="episodes-actions">
+                            <button class="btn btn-small btn-secondary" id="selectAllEpisodes">
+                                <i class="fas fa-check-square"></i> 全选
+                            </button>
+                            <button class="btn btn-small btn-secondary" id="invertSelectEpisodes">
+                                <i class="fas fa-random"></i> 反选
+                            </button>
+                            <button class="btn btn-small btn-primary" id="downloadSelectedEpisodes">
+                                <i class="fas fa-download"></i> 下载选中
+                            </button>
+                            <div class="episodes-count">共 ${detail.episodes.length} 集</div>
+                        </div>
+                    </div>
+                    <div class="episodes-grid" id="episodesGrid"></div>
+                </div>
+            `;
+            
+            // 计算默认选中的剧集（满足 episodeNumber 最大范围且靠前）
+            const selectedEpisodes = this.calculateDefaultSelection(detail.episodes);
+            
+            const episodesGrid = videoPlayer.querySelector('#episodesGrid');
+            if (episodesGrid) {
+                detail.episodes.forEach((ep, index) => {
+                    // 获取该集的播放进度
+                    const savedPosition = this.playerManager.progress.getEpisodePosition(ep.id);
+                    const hasProgress = savedPosition > 10; // 超过10秒算有进度
+                    const isSelected = selectedEpisodes.has(ep.id);
+                    
+                    const epBtn = DOMHelper.create('div', `episode-card ${hasProgress ? 'has-progress' : ''} ${isSelected ? 'selected' : ''}`, `
+                        <div class="episode-checkbox">
+                            <input type="checkbox" class="ep-checkbox" data-ep-id="${ep.id}" ${isSelected ? 'checked' : ''}>
+                        </div>
+                        <div class="episode-number-badge">${ep.episodeNumber || index + 1}</div>
+                        <div class="episode-info">
+                            <div class="episode-name">${ep.title || `第${ep.episodeNumber || index + 1}集`}</div>
+                            ${ep.duration ? `<div class="episode-duration"><i class="fas fa-clock"></i> ${ep.duration}</div>` : ''}
+                        </div>
+                        <div class="episode-play-icon"><i class="fas fa-play"></i></div>
+                        ${hasProgress ? `<div class="episode-progress-indicator" style="width: ${Math.min((savedPosition / 1440) * 100, 100)}%"></div>` : ''}
+                    `);
+                    
+                    // 复选框点击事件 - 阻止冒泡
+                    const checkbox = epBtn.querySelector('.ep-checkbox');
+                    if (checkbox) {
+                        DOMHelper.on(checkbox, 'click', (e) => {
+                            e.stopPropagation();
+                            epBtn.classList.toggle('selected', checkbox.checked);
+                        });
+                    }
+                    
+                    // 点击卡片播放
+                    DOMHelper.on(epBtn, 'click', (e) => {
+                        // 如果点击的是复选框，不播放
+                        if (e.target.classList.contains('ep-checkbox')) {
+                            return;
+                        }
+                        // 关闭系列选择，打开播放器
+                        this.playEpisode(seriesVideo, ep, savedPosition);
+                    });
+                    
+                    episodesGrid.appendChild(epBtn);
+                });
+            }
+            
+            // 绑定全选按钮
+            const selectAllBtn = videoPlayer.querySelector('#selectAllEpisodes');
+            if (selectAllBtn) {
+                DOMHelper.on(selectAllBtn, 'click', () => this.toggleSelectAll(selectAllBtn));
+            }
+            
+            // 绑定反选按钮
+            const invertSelectBtn = videoPlayer.querySelector('#invertSelectEpisodes');
+            if (invertSelectBtn) {
+                DOMHelper.on(invertSelectBtn, 'click', () => this.invertEpisodeSelection());
+            }
+            
+            // 绑定下载按钮
+            const downloadBtn = videoPlayer.querySelector('#downloadSelectedEpisodes');
+            if (downloadBtn) {
+                DOMHelper.on(downloadBtn, 'click', () => this.downloadSelectedEpisodes(seriesVideo));
+            }
+        } catch (error) {
+            console.error('加载系列详情失败:', error);
+            videoPlayer.innerHTML = '<div class="loading-placeholder error"><i class="fas fa-times-circle"></i><span>加载失败，请重试</span></div>';
+        } finally {
+            this.hideLoading();
+        }
+    }
+    
+    /**
+     * 计算默认选中的剧集
+     * 规则：凑够 episodeNumber 最大范围，每个位置选第一个出现的（靠前的）
+     * 例如：a1,a2,a3,b1,b2,b3,b4,c1,c2,c3,c4,c5 -> 选中 a1,a2,a3,b4,c5 (凑够1-5集)
+     * @param {Array} episodes - 剧集列表（按顺序排列）
+     * @returns {Set} 选中的剧集ID集合
+     */
+    calculateDefaultSelection(episodes) {
+        if (!episodes || episodes.length === 0) return new Set();
+        
+        // 按 episodeNumber 分组（相同 episodeNumber 的归为一组）
+        const numGroups = new Map();
+        
+        episodes.forEach(ep => {
+            const epNum = parseInt(ep.episodeNumber) || 0;
+            if (!numGroups.has(epNum)) {
+                numGroups.set(epNum, []);
+            }
+            numGroups.get(epNum).push(ep);
+        });
+        
+        // 找出最大的 episodeNumber
+        let maxEpNum = 0;
+        for (const num of numGroups.keys()) {
+            if (num > maxEpNum) {
+                maxEpNum = num;
+            }
+        }
+        
+        // 选择每个 episodeNumber 的第一个（最靠前的）
+        const selectedIds = new Set();
+        for (let i = 1; i <= maxEpNum; i++) {
+            const eps = numGroups.get(i);
+            if (eps && eps.length > 0) {
+                // 选择该 episodeNumber 的第一个（最靠前的）
+                selectedIds.add(eps[0].id);
+            }
+        }
+        
+        return selectedIds;
+    }
+    
+    /**
+     * 切换全选/取消全选
+     * @param {HTMLElement} btn - 按钮元素
+     */
+    toggleSelectAll(btn) {
+        const checkboxes = DOMHelper.$$('.ep-checkbox');
+        const episodeCards = DOMHelper.$$('.episode-card');
+        
+        // 检查是否所有都已选中
+        const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+        const newState = !allChecked;
+        
+        checkboxes.forEach((checkbox, index) => {
+            checkbox.checked = newState;
+            if (episodeCards[index]) {
+                episodeCards[index].classList.toggle('selected', newState);
+            }
+        });
+        
+        // 更新按钮文字
+        btn.innerHTML = newState ? 
+            '<i class="fas fa-square"></i> 取消全选' : 
+            '<i class="fas fa-check-square"></i> 全选';
+    }
+    
+    /**
+     * 反选剧集
+     */
+    invertEpisodeSelection() {
+        const checkboxes = DOMHelper.$$('.ep-checkbox');
+        const episodeCards = DOMHelper.$$('.episode-card');
+        
+        checkboxes.forEach((checkbox, index) => {
+            checkbox.checked = !checkbox.checked;
+            if (episodeCards[index]) {
+                episodeCards[index].classList.toggle('selected', checkbox.checked);
+            }
+        });
+    }
+    
+    /**
+     * 下载选中的剧集
+     * @param {VideoItem} seriesVideo - 系列视频信息
+     */
+    async downloadSelectedEpisodes(seriesVideo) {
+        const checkboxes = DOMHelper.$$('.ep-checkbox:checked');
+        
+        if (checkboxes.length === 0) {
+            this.notifications.warning('请先选择要下载的剧集');
+            return;
+        }
+        
+        // 获取选中的剧集
+        const selectedEpIds = Array.from(checkboxes).map(cb => cb.dataset.epId);
+        const selectedEpisodes = this.currentEpisodes.filter(ep => selectedEpIds.includes(ep.id));
+        
+        this.showLoading();
+        this.notifications.info(`开始下载 ${selectedEpisodes.length} 个剧集...`);
+        
+        let successCount = 0;
+        let failCount = 0;
+        
+        for (const episode of selectedEpisodes) {
+            try {
+                // 解析视频链接
+                const parseResult = await this.api.parseVideo(episode.url, seriesVideo.source);
+                const results = parseResult.results || [];
+                
+                if (results && results.length > 0) {
+                    // 选择最高质量
+                    const highestQuality = results.reduce((prev, current) => {
+                        const prevBandwidth = prev.bandwidth || 0;
+                        const currentBandwidth = current.bandwidth || 0;
+                        return currentBandwidth > prevBandwidth ? current : prev;
+                    });
+                    
+                    // 创建下载任务
+                    const downloadTitle = `${seriesVideo.title} - ${episode.title || episode.episodeNumber}`;
+                    await this.createSeriesDownload(downloadTitle, highestQuality.url, episode.url);
+                    successCount++;
+                } else {
+                    failCount++;
+                    console.error(`无法获取剧集下载链接: ${episode.title}`);
+                }
+            } catch (error) {
+                failCount++;
+                console.error(`下载剧集失败: ${episode.title}`, error);
+            }
+        }
+        
+        this.hideLoading();
+        
+        if (successCount > 0) {
+            this.notifications.success(`成功添加 ${successCount} 个下载任务`);
+        }
+        if (failCount > 0) {
+            this.notifications.error(`${failCount} 个剧集添加失败`);
+        }
+    }
+    
+    /**
+     * 创建系列视频下载任务
+     * @param {string} title - 下载标题
+     * @param {string} m3u8Url - M3U8链接
+     * @param {string} referer - 来源URL
+     */
+    async createSeriesDownload(title, m3u8Url, referer) {
+        try {
+            const result = await this.api.createDownload(title, m3u8Url, undefined, referer);
+            if (result.task) {
+                await this.api.startDownload(result.task.id);
+                return result;
+            } else {
+                throw new Error('创建下载任务失败');
+            }
+        } catch (error) {
+            console.error('Create series download error:', error);
+            throw error;
+        }
+    }
+    
+    /**
+     * 获取类型文本
+     */
+    getTypeText(type) {
+        const typeMap = {
+            'anime': '动漫',
+            'drama': '剧集',
+            'movie': '电影',
+            'variety': '综艺',
+            'documentary': '纪录片',
+            'other': '其他'
+        };
+        return typeMap[type] || type;
+    }
+    
+    /**
+     * 获取状态文本
+     */
+    getStatusText(status) {
+        const statusMap = {
+            'ongoing': '连载中',
+            'completed': '已完结',
+            'upcoming': '即将上映',
+            'hiatus': '暂停更新'
+        };
+        return statusMap[status] || status;
+    }
+    
+    /**
+     * 格式化观看数
+     */
+    formatViews(views) {
+        if (views >= 100000000) {
+            return (views / 100000000).toFixed(1) + '亿';
+        } else if (views >= 10000) {
+            return (views / 10000).toFixed(1) + '万';
+        }
+        return views.toString();
+    }
+    
+    /**
+     * 播放剧集
+     * @param {VideoItem} seriesVideo - 系列视频信息
+     * @param {Object} episode - 剧集信息 {id, title, url, episodeNumber, ...}
+     * @param {number} [startTime=0] - 开始播放时间（秒）
+     * @returns {Promise<void>}
+     */
+    async playEpisode(seriesVideo, episode, startTime = 0) {
+        if (!seriesVideo || !episode) {
+            console.error('playEpisode: 缺少必要参数');
+            return;
+        }
+        
+        // 保存当前播放的系列和剧集信息
+        this.currentSeriesVideo = seriesVideo;
+        this.currentSeriesId = seriesVideo.id;
+        this.currentEpisodeId = episode.id;
+        
+        // 显示播放器界面
+        const videoPlayer = DOMHelper.$('#videoPlayer');
+        const videoDetailInfo = DOMHelper.$('#videoDetailInfo');
+        const qualitySelection = DOMHelper.$('#qualitySelection');
+        const modalTitle = DOMHelper.$('#modalTitle');
+        
+        if (!videoPlayer) return;
+        
+        modalTitle.textContent = `${seriesVideo.title} - ${episode.title}`;
+        videoPlayer.innerHTML = '<div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #666;">正在加载播放链接...</div>';
+        videoDetailInfo.innerHTML = '';
+        qualitySelection.innerHTML = '';
+        
+        try {
+            this.showLoading();
+            
+            // 解析剧集链接
+            const parseResult = await this.api.parseVideo(episode.url, seriesVideo.source);
+            const results = parseResult.results || [];
+            
+            if (results && results.length > 0) {
+                // 清空播放器容器
+                videoPlayer.innerHTML = '';
+                
+                // 初始化播放器，传入剧集列表和回调
+                await this.playerManager.initPlayer(videoPlayer, {
+                    ...seriesVideo,
+                    title: `${seriesVideo.title} - ${episode.title}`,
+                    url: episode.url
+                }, {
+                    seriesId: seriesVideo.id,
+                    episodeId: episode.id,
+                    startTime: startTime,
+                    episodes: this.currentEpisodes,
+                    onClose: () => this.backToEpisodes(),
+                    onEpisodeChange: (ep, index) => this.handleEpisodeChange(ep, index)
+                });
+                
+                this.playerManager.setQualities(results);
+                
+                // 渲染画质选择
+                this.renderQualitySelection(results);
+                
+                // 显示返回选集按钮
+                videoDetailInfo.innerHTML = `
+                    <button class="btn btn-secondary" id="backToEpisodesBtn">
+                        <i class="fas fa-list"></i> 返回选集
+                    </button>
+                `;
+                
+                const backBtn = videoDetailInfo.querySelector('#backToEpisodesBtn');
+                if (backBtn) {
+                    DOMHelper.on(backBtn, 'click', () => {
+                        this.backToEpisodes();
+                    });
+                }
+            } else {
+                videoPlayer.innerHTML = '<div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #666;">无法获取播放链接</div>';
+            }
+        } catch (error) {
+            console.error('加载剧集失败:', error);
+            videoPlayer.innerHTML = '<div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #666;">加载失败</div>';
+        } finally {
+            this.hideLoading();
+        }
     }
     
     /**
@@ -738,6 +1319,11 @@ class VideoManager {
             this.notifications.error('模态框元素未找到');
             return;
         }
+        
+        // 清理系列视频状态，确保这是普通视频播放
+        this.playerManager.destroy();
+        this.currentSeriesVideo = null;
+        this.currentEpisodes = [];
         
         modalTitle.textContent = video.title;
         
@@ -873,6 +1459,36 @@ class VideoManager {
             DOMHelper.hide(modal);
         }
         this.playerManager.destroy();
+        // 清理系列视频状态
+        this.currentSeriesVideo = null;
+        this.currentEpisodes = [];
+    }
+    
+    /**
+     * 返回选集页面
+     */
+    backToEpisodes() {
+        // 如果当前正在播放系列剧集，返回选集页面
+        if (this.currentSeriesVideo) {
+            this.showSeriesModal(this.currentSeriesVideo);
+        } else {
+            this.closeVideoModal();
+        }
+    }
+    
+    /**
+     * 处理剧集切换
+     * @param {Object} episode - 要切换到的剧集
+     * @param {number} index - 剧集索引
+     */
+    async handleEpisodeChange(episode, index) {
+        if (!this.currentSeriesVideo || !episode) return;
+        
+        // 获取播放进度（返回的是秒数）
+        const startTime = this.playerManager.progress.getEpisodePosition(episode.id);
+        
+        // 播放新剧集
+        await this.playEpisode(this.currentSeriesVideo, episode, startTime);
     }
     
     /**
@@ -1264,6 +1880,9 @@ class VideoManager {
         // 滚动到顶部
         window.scrollTo({ top: 0, behavior: 'smooth' });
         
+        // 切换页码时清除对应缓存
+        this.clearPageCache(type);
+        
         if (type === 'home') {
             await this.loadHomePage(pageNum);
         } else if (type === 'search') {
@@ -1411,6 +2030,15 @@ let app = null;
 // 初始化应用
 document.addEventListener('DOMContentLoaded', () => {
     app = new VideoManager();
+      // 添加管理按钮事件监听器
+      const manageSourceBtn = DOMHelper.$('#manageSourceBtn');
+      if (manageSourceBtn) {
+        manageSourceBtn.addEventListener('click', () => {
+            if (app) {
+                app.switchPage('sources');
+            }
+        });
+      }
 });
 
 // 全局错误处理

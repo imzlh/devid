@@ -3,3 +3,4 @@
 pnpm-lock.yaml
 downloads/
 node_modules/
+config.json

@@ -1,5 +1,14 @@
-// 视频项接口
-export interface VideoItem {
+// 内容类型
+export type IContentType = 'video' | 'series';
+
+// 系列类型
+export type ISeriesType = 'anime' | 'drama' | 'movie' | 'variety' | 'documentary' | 'other';
+
+// 系列状态
+export type ISeriesStatus = 'ongoing' | 'completed' | 'upcoming' | 'hiatus';
+
+// 视频/系列项（统一类型，支持混排）
+export interface IVideoItem {
     id: string;
     title: string;
     thumbnail: string;
@@ -8,10 +17,12 @@ export interface VideoItem {
     uploadTime?: string;
     url: string;
     source: string;
+    contentType?: IContentType;  // 默认为video
+    seriesInfo?: Partial<ISeriesDetail>;  // 系列基本信息（用于混排展示，部分字段）
 }
 
-// 视频详情接口
-export interface VideoDetails {
+// 视频详情
+export interface IVideoDetails {
     id: string;
     title: string;
     description?: string;
@@ -31,31 +42,91 @@ export interface VideoDetails {
     tags?: string[];
 }
 
-// 视频列表结果接口
-export interface VideoList {
-    videos: VideoItem[];
+// 视频列表（支持混排）
+export interface IVideoList {
+    videos: IVideoItem[];
     currentPage: number;
     totalPages: number;
 }
 
-// 视频源接口
-export interface VideoSource {
+// 剧集
+export interface IEpisode {
+    id: string;
+    seriesId: string;
+    title: string;
+    episodeNumber: number;
+    seasonNumber?: number;
+    thumbnail?: string;
+    duration?: string;
+    url: string;
+    description?: string;
+    airDate?: string;
+}
+
+// 系列详情（基本信息，不包含完整剧集列表）
+export interface ISeriesDetail {
+    id: string;
+    title: string;
+    originalTitle?: string;
+    aliases?: string[];
+    description?: string;
+    thumbnail: string;
+    cover?: string;
+    banner?: string;
+    type: ISeriesType;
+    status: ISeriesStatus;
+    year?: number;
+    country?: string;
+    genres?: string[];
+    tags?: string[];
+    rating?: number;
+    views?: number;
+    totalEpisodes: number;
+    episodes?: IEpisode[];  // 可选，getSeriesDetail 不返回，getSeriesList 返回
+    source: string;
+    url: string;
+    currentEpisode?: number;
+}
+
+// 系列剧集列表结果
+export interface ISeriesResult extends ISeriesDetail {
+    seriesId: string;
+    title: string;
+    episodes: IEpisode[];
+    totalEpisodes: number;
+    source: string;
+}
+
+// 视频源健康状态
+export interface ISourceHealth {
+    status: 'healthy' | 'unhealthy' | 'unknown';
+    lastCheck: number;
+    consecutiveFailures: number;
+    circuitOpen: boolean;
+    circuitOpenUntil: number;
+    lastError?: string;
+}
+
+// 视频源
+export interface ISource {
     name: string;
     id: string;
     baseUrl: string;
     enabled: boolean;
+    health?: ISourceHealth;
 }
 
-// M3U8解析结果接口
-export interface M3U8Result {
+// M3U8解析结果
+export interface IM3U8Result {
     url: string;
     quality: string;
     resolution?: string;
     bandwidth?: number;
+    format?: 'm3u8' | 'h5';  // 支持M3U8和MP4格式
 }
 
-// 下载任务接口
-export interface DownloadTask {
+// 下载任务
+export interface IDownloadTask {
     id: string;
     url: string;
     referer?: string;
@@ -70,61 +141,75 @@ export interface DownloadTask {
     endTime?: Date;
     error?: string;
     totalSegments?: number;
+    retryCount?: number;
+    maxRetries?: number;
 }
 
-// 图片数据接口
-export interface ImageData {
+// 持久化下载任务
+export interface IDownloadTaskPersisted {
+    id: string;
+    url: string;
+    referer?: string;
+    title: string;
+    outputPath: string;
+    filePath: string;
+    fileName: string;
+    status: 'pending' | 'downloading' | 'completed' | 'error' | 'cancelled';
+    progress: number;
+    createTime: string;
+    startTime?: string;
+    endTime?: string;
+    error?: string;
+    totalSegments?: number;
+    retryCount?: number;
+    maxRetries?: number;
+}
+
+// 图片数据
+export interface IImageData {
     data: Uint8Array;
     contentType: string;
 }
 
-// types/m3u8.ts - 完整的类型定义
-export interface M3U8Manifest {
+// M3U8类型定义
+export interface IM3U8Manifest {
     version: number;
     targetDuration: number;
     mediaSequence: number;
     endList: boolean;
-    segments: M3U8Segment[];
-    // 主播放列表属性
-    variants?: M3U8Variant[];
-    // 媒体相关属性
+    segments: IM3U8Segment[];
+    variants?: IM3U8Variant[];
     mediaGroups?: {
-        audio?: Map<string, M3U8MediaGroup>;
-        video?: Map<string, M3U8MediaGroup>;
-        subtitles?: Map<string, M3U8MediaGroup>;
+        audio?: Map<string, IM3U8MediaGroup>;
+        video?: Map<string, IM3U8MediaGroup>;
+        subtitles?: Map<string, IM3U8MediaGroup>;
     };
 }
 
-export interface M3U8Segment {
-    uri: string;           // 片段URL
-    duration: number;      // 时长(秒)
-    title?: string;        // 标题
-    sequence: number;      // 序列号
-
-    // 加密信息
+export interface IM3U8Segment {
+    uri: string;
+    duration: number;
+    title?: string;
+    sequence: number;
     key?: {
-        method: string;      // AES-128, SAMPLE-AES等
-        uri?: string;        // 密钥URL
-        iv?: Uint8Array;     // 初始化向量
+        method: string;
+        uri?: string;
+        iv?: Uint8Array;
         format?: string;
         keyFormatVersions?: string;
     };
-
-    // 初始化片段
     map?: {
-        uri: string;         // 初始化片段URL
-        byterange?: string;  // 字节范围
+        uri: string;
+        byterange?: string;
     };
-
-    // 其他属性
     discontinuity?: boolean;
     programDateTime?: string;
     byterange?: string;
 }
 
-export interface M3U8Variant {
-    uri: string;           // 变体播放列表URL
-    bandwidth: number;     // 必需参数
+export interface IM3U8Variant {
+    uri: string;
+    bandwidth: number;
     averageBandwidth?: number;
     codecs?: string;
     resolution?: { width: number; height: number };
@@ -134,10 +219,10 @@ export interface M3U8Variant {
     video?: string;
     subtitles?: string;
     closedCaptions?: string;
-    name?: string;         // 自定义名称
+    name?: string;
 }
 
-export interface M3U8MediaGroup {
+export interface IM3U8MediaGroup {
     type: 'AUDIO' | 'VIDEO' | 'SUBTITLES' | 'CLOSED-CAPTIONS';
     groupId: string;
     name: string;

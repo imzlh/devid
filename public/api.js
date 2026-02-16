@@ -144,6 +144,15 @@ class APIManager {
     async getHomeVideos(page = 1) {
         return this.get(`/api/home-videos?page=${page}`);
     }
+
+    /**
+     * 获取系列信息
+     * @param {number} series
+     * @returns {Record<>}
+     */
+    async getSeriesDetail(series) {
+        return this.get('/api/series/' + series);
+    }
     
     /**
      * 搜索视频
@@ -247,161 +256,5 @@ class APIManager {
      */
     getImageProxyUrl(url, source) {
         return `/api/image-proxy?url=${encodeURIComponent(url)}&source=${source}`;
-    }
-}
-
-/**
- * 视频播放器管理类
- */
-class VideoPlayerManager {
-    constructor() {
-        /** @type {any|null} ArtPlayer实例 */
-        this.player = null;
-        /** @type {VideoItem|null} */
-        this.currentVideo = null;
-        /** @type {M3U8Result[]} */
-        this.qualities = [];
-        /** @type {number} */
-        this.currentQualityIndex = 0;
-    }
-    
-    /**
-     * 初始化播放器
-     * @param {HTMLElement} container - 容器元素
-     * @param {VideoItem} videoData - 视频数据
-     * @returns {Promise<any>}
-     */
-    async initPlayer(container, videoData) {
-        // 销毁现有播放器
-        this.destroy();
-        
-        // 设置当前视频数据
-        this.currentVideo = videoData;
-        
-        // 检查ArtPlayer是否可用
-        if (typeof Artplayer === 'undefined') {
-            throw new Error('ArtPlayer未加载');
-        }
-        
-        // 创建新播放器
-        this.player = new Artplayer({
-            container: container,
-            url: '',
-            title: videoData.title,
-            poster: videoData.thumbnail,
-            volume: 0.7,
-            isLive: false,
-            muted: false,
-            autoplay: true,
-            pip: true,
-            autoSize: false,
-            autoMini: true,
-            screenshot: true,
-            setting: true,
-            loop: false,
-            flip: true,
-            playbackRate: true,
-            aspectRatio: true,
-            fullscreen: true,
-            fullscreenWeb: true,
-            subtitleOffset: true,
-            miniProgressBar: true,
-            mutex: true,
-            backdrop: true,
-            playsInline: false,
-            autoPlayback: true,
-            airplay: true,
-            theme: '#007bff',
-            lang: 'zh-cn',
-            whitelist: ['*'],
-            moreVideoAttr: {
-                crossOrigin: 'anonymous',
-            },
-            customType: {
-                m3u8: function(video, url) {
-                    if (typeof Hls !== 'undefined' && Hls.isSupported()) {
-                        const hls = new Hls();
-                        hls.loadSource(url);
-                        hls.attachMedia(video);
-                    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-                        video.src = url;
-                    }
-                }
-            }
-        });
-        
-        // 添加自动播放逻辑
-        this.player.on('video:loadedmetadata', () => {
-            // 如果是首次加载（currentTime为0），则自动播放
-            if (this.player.video.currentTime === 0) {
-                this.player.play();
-            }
-        });
-        
-        return this.player;
-    }
-    
-    /**
-     * 设置画质列表
-     * @param {M3U8Result[]} qualities
-     */
-    setQualities(qualities) {
-        this.qualities = qualities;
-        this.currentQualityIndex = 0;
-        
-        if (this.player && qualities.length > 0) {
-            // 设置默认质量（选择第一个）
-            console.log('设置默认画质:', qualities[0].resolution || '未知', 'URL:', qualities[0].url);
-            this.switchQuality(qualities[0], 0);
-        } else {
-            console.warn('没有可用的画质');
-        }
-    }
-    
-    /**
-     * 切换画质
-     * @param {M3U8Result} quality
-     * @param {number} index
-     */
-    switchQuality(quality, index = 0) {
-        if (!this.player || !quality.url || !this.currentVideo) return;
-        
-        this.currentQualityIndex = index;
-        
-        // 构建代理URL
-        const proxyUrl = `/api/proxy/video.m3u8?url=${encodeURIComponent(quality.url)}&source=${this.currentVideo.source}&referer=${encodeURIComponent(this.currentVideo.url)}`;
-        
-        try {
-            this.player.switchUrl(proxyUrl);
-            
-            console.log('已切换到画质:', quality.resolution || '未知', 'URL:', proxyUrl);
-        } catch (error) {
-            console.error('切换画质失败:', error);
-        }
-    }
-    
-    /**
-     * 获取当前画质
-     * @returns {M3U8Result|null}
-     */
-    getCurrentQuality() {
-        return this.qualities[this.currentQualityIndex] || null;
-    }
-    
-    /**
-     * 销毁播放器
-     */
-    destroy() {
-        if (this.player) {
-            try {
-                this.player.destroy();
-            } catch (error) {
-                console.error('销毁播放器失败:', error);
-            }
-            this.player = null;
-        }
-        this.currentVideo = null;
-        this.qualities = [];
-        this.currentQualityIndex = 0;
     }
 }

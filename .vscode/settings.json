@@ -1,4 +1,7 @@
 {
     "deno.enable": true,
-    "deno.disablePaths": ["/public"]
+    "deno.disablePaths": [
+        "/public"
+    ],
+    "diffEditor.renderSideBySide": true
 }
