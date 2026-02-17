@@ -1112,10 +1112,26 @@ class VideoManager {
      * @param {number} index
      */
     async playInfiniteVideo(index) {
-        if (index < 0 || index >= this.infiniteQueue.length) return;
+        // 处理边界情况
+        if (index < 0) return;
+        if (index >= this.infiniteQueue.length) {
+            // 当前批次播完，加载新批次
+            await this.loadInfiniteBatch();
+            if (this.infiniteQueue.length > 0) {
+                index = 0;
+            } else {
+                this.notifications.info('没有更多视频了');
+                return;
+            }
+        }
 
         this.infiniteIndex = index;
         const episode = this.infiniteQueue[index];
+
+        // 解析标题（格式：视频标题/作者名）
+        const titleParts = episode.title ? episode.title.split('/') : [];
+        const videoTitle = titleParts[0] || episode.title || `第${index + 1}个`;
+        const authorName = titleParts[1] || '';
 
         // 打开模态框
         const modal = DOMHelper.$('#videoModal');
@@ -1126,7 +1142,8 @@ class VideoManager {
 
         if (!modal || !videoPlayer) return;
 
-        modalTitle.textContent = `${this.infiniteVideo.title} - ${index + 1}/${this.infiniteQueue.length}`;
+        // 模态框标题显示视频标题和作者
+        modalTitle.textContent = authorName ? `${videoTitle} - ${authorName}` : videoTitle;
         videoPlayer.innerHTML = '<div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #666;">正在加载...</div>';
         videoDetailInfo.innerHTML = '';
         qualitySelection.innerHTML = '';
@@ -1136,10 +1153,10 @@ class VideoManager {
             <div class="infinite-controls">
                 <span class="infinite-progress"><i class="fas fa-infinity"></i> ${index + 1} / ${this.infiniteQueue.length}</span>
                 <button class="btn btn-secondary btn-lg" id="infinitePrev" ${index === 0 ? 'disabled' : ''}>
-                    <i class="fas fa-step-backward"></i>
+                    <i class="fas fa-step-backward"></i> 上一个
                 </button>
                 <button class="btn btn-secondary btn-lg" id="infiniteNext">
-                    <i class="fas fa-step-forward"></i>
+                    下一个 <i class="fas fa-step-forward"></i>
                 </button>
             </div>
         `;
