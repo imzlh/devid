@@ -7,10 +7,7 @@
   "videoSource": {
     "initTimeoutMs": 15000,
     "initRetryAttempts": 2,
-    "initRetryDelayMs": 1000,
-    "healthCheckIntervalMs": 60000,
-    "circuitBreakerThreshold": 5,
-    "circuitBreakerResetMs": 300000
+    "initRetryDelayMs": 1000
   },
   "download": {
     "timeoutMs": 1800000,

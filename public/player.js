@@ -8,6 +8,9 @@ class ProgressManager {
         this.recentKey = 'vdown_recent_watch';
         this.progressData = this.loadProgress();
         this.recentWatch = this.loadRecentWatch();
+
+        // 覆盖Artplayer
+        Artplayer.PLAYBACK_RATE = [0.75, 1, 1.25, 1.5, 2, 3, 4];
     }
 
     /**

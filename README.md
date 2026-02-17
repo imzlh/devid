@@ -1,11 +1,19 @@
 # VDown - 视频下载器
 
-一个基于Deno的视频下载器，支持多源切换、视频搜索、M3U8解析和下载功能。
+一个基于Deno的视频下载器，支持多源切换、视频搜索、M3U8解析、系列视频、短视频和下载功能。
+
+![搜索](docs/image-1.png)
+![选集](docs/image.png)
+
+> [!IMPORTANT]
+> 由于这个视频管理器最初是为了R18内容编写的，因此我们不会对项目进行宣传<br>
+> 对于agefans动漫的支持只是一时兴起，你完全可以使用，但是不推荐暴露在公网<br>
+> 对管理器内任何视频造成的任何问题，你需要自己承担，不只是版权
 
 ## 功能特性
 
 - 多视频源支持，可轻松切换不同视频源
-- 主页视频浏览
+- 主页视频浏览、系列浏览、短视频
 - 视频搜索（支持多页结果）
 - M3U8视频链接解析和代理
 - 图片代理（支持需要解码的图片）
@@ -115,7 +123,8 @@ import { VideoItem, SearchResult, M3U8Result } from '../types/index.ts';
 
 export class MyVideoSource extends BaseVideoSource {
   constructor() {
-    super('my-source', '我的视频源', 'https://my-video-site.com');
+    // 可选，是否支持系列，对于 短视频/系列视频需要设置为true
+    super('my-source', '我的视频源', 'https://my-video-site.com', false);
   }
 
   async getHomeVideos(): Promise<VideoItem[]> {
@@ -129,316 +138,16 @@ export class MyVideoSource extends BaseVideoSource {
   async parseVideoUrl(url: string): Promise<M3U8Result[]> {
     // 实现解析视频链接的逻辑
   }
-}
-```
 
-## API接口
-
-### 视频源管理
-
-#### `GET /api/sources`
-获取所有可用的视频源列表。
-
-**返回值：**
-```json
-{
-  "sources": [
-    {
-      "id": "gg51",
-      "name": "GG51",
-      "baseUrl": "https://gg51.com",
-      "isActive": true
-    }
-  ]
-}
-```
-
-#### `POST /api/sources/active`
-设置当前活动的视频源。
-
-**请求体：**
-```json
-{
-  "id": "gg51"
-}
-```
-
-**参数说明：**
-- `id` (string, 必需): 视频源ID
-
-**返回值：**
-```json
-{
-  "success": true
-}
-```
-
-#### `GET /api/sources/active`
-获取当前活动的视频源信息。
-
-**返回值：**
-```json
-{
-  "id": "gg51",
-  "name": "GG51"
-}
-```
-
-### 视频内容
-
-#### `GET /api/home-videos`
-获取主页视频列表。
-
-**查询参数：**
-- `page` (number, 可选): 页码，默认为1
-
-**返回值：**
-```json
-{
-  "videos": [
-    {
-      "id": "12345",
-      "title": "视频标题",
-      "thumbnail": "缩略图URL",
-      "duration": "01:23:45",
-      "url": "视频详情页URL",
-      "source": "gg51"
-    }
-  ],
-  "currentPage": 1,
-  "totalPages": 50
-}
-```
-
-#### `GET /api/search`
-搜索视频。
-
-**查询参数：**
-- `q` (string, 必需): 搜索关键词
-- `page` (number, 可选): 页码，默认为1
-
-**返回值：**
-```json
-{
-  "videos": [
-    {
-      "id": "12345",
-      "title": "视频标题",
-      "thumbnail": "缩略图URL",
-      "duration": "01:23:45",
-      "url": "视频详情页URL",
-      "source": "gg51"
-    }
-  ],
-  "currentPage": 1,
-  "totalPages": 10
-}
-```
-
-#### `POST /api/parse-video`
-解析视频链接获取M3U8地址。
-
-**请求体：**
-```json
-{
-  "url": "视频详情页URL"
-}
-```
-
-**参数说明：**
-- `url` (string, 必需): 视频详情页URL
-
-**返回值：**
-```json
-{
-  "results": [
-    {
-      "url": "M3U8文件URL",
-      "quality": "高清",
-      "resolution": "1920x1080",
-      "bandwidth": 2000000
-    }
-  ]
-}
-```
-
-### M3U8处理
-
-#### `GET /api/parse-m3u8`
-解析M3U8链接，提取视频流信息。
-
-**查询参数：**
-- `url` (string, 必需): M3U8文件URL
-
-**返回值：**
-```json
-{
-  "results": [
-    {
-      "url": "M3U8文件URL",
-      "quality": "高清",
-      "resolution": "1920x1080",
-      "bandwidth": 2000000
-    }
-  ]
-}
-```
-
-#### `GET /api/proxy/:name`
-M3U8代理请求，用于处理需要特定Referer的M3U8和TS文件。
-
-**路径参数：**
-- `name` (string, 必需): 文件名称，如 playlist.m3u8, segment.ts, key.bin 等
-
-**查询参数：**
-- `url` (string, 必需): URL编码后的文件URL
-- `referer` (string, 可选): Referer头
-- `taskId` (string, 可选): 下载任务ID
-
-**返回值：** 文件内容
-
-### 图片代理
-
-#### `GET /api/image-proxy`
-获取需要特殊处理的图片，如需要解码的图片。
-
-**查询参数：**
-- `url` (string, 必需): 图片URL
-- `source` (string, 必需): 视频源ID，用于设置正确的Referer
-
-**返回值：** 图片数据
-
-### 下载管理
-
-#### `POST /api/downloads`
-创建新的下载任务。
-
-**请求体：**
-```json
-{
-  "title": "视频标题",
-  "url": "M3U8文件URL",
-  "outputPath": "输出文件路径",
-  "quality": "视频质量",
-  "referer": "引用页URL"
-}
-```
-
-**参数说明：**
-- `title` (string, 必需): 视频标题，用于命名输出文件
-- `url` (string, 必需): M3U8文件URL
-- `outputPath` (string, 可选): 输出文件路径，默认为下载目录
-- `quality` (string, 可选): 视频质量描述
-- `referer` (string, 可选): 引用页URL
-
-**返回值：**
-```json
-{
-  "task": {
-    "id": "下载任务ID",
-    "title": "视频标题",
-    "status": "created",
-    "progress": 0,
-    "createdAt": "2023-01-01T00:00:00.000Z"
+  async getSeries(series: string): Promise<ISeriesResult> {
+    // 可选，只有当启用时才需要实现
   }
-}
-```
-
-#### `POST /api/downloads/:id/start`
-开始执行下载任务。
-
-**路径参数：**
-- `id` (string, 必需): 下载任务ID
-
-**返回值：**
-```json
-{
-  "success": true
-}
-```
-
-#### `GET /api/downloads/:id`
-获取指定下载任务的状态和进度。
-
-**路径参数：**
-- `id` (string, 必需): 下载任务ID
-
-**返回值：**
-```json
-{
-  "task": {
-    "id": "下载任务ID",
-    "title": "视频标题",
-    "status": "downloading",
-    "progress": 45,
-    "speed": "1.2MB/s",
-    "createdAt": "2023-01-01T00:00:00.000Z",
-    "startedAt": "2023-01-01T00:01:00.000Z"
-  }
-}
-```
-
-#### `GET /api/downloads`
-获取所有下载任务的列表。
-
-**返回值：**
-```json
-{
-  "tasks": [
-    {
-      "id": "下载任务ID",
-      "title": "视频标题",
-      "status": "completed",
-      "progress": 100,
-      "createdAt": "2023-01-01T00:00:00.000Z",
-      "completedAt": "2023-01-01T00:05:00.000Z"
-    }
-  ]
-}
-```
-
-#### `POST /api/downloads/:id/cancel`
-取消正在执行的下载任务。
-
-**路径参数：**
-- `id` (string, 必需): 下载任务ID
-
-**返回值：**
-```json
-{
-  "success": true
-}
-```
-
-### 其他
-
-#### `GET /api/health`
-健康检查接口，用于确认服务是否正常运行。
-
-**返回值：**
-```json
-{
-  "status": "ok",
-  "timestamp": "2023-01-01T00:00:00.000Z",
-  "uptime": 12345.67
 }
 ```
 
 ## 配置
 
-可以通过环境变量配置端口：
-
-```bash
-PORT=3000 deno run -A main.ts
-```
-
-默认端口为9876。
-
-可以通过环境变量启用详细日志：
-
-```bash
-VERBOSE_LOGGING=true deno run -A main.ts
-```
+新版本的管理器支持了配置文件(config.json)，你可以参照`config.json.example`修改配置
 
 ## 注意事项
 
