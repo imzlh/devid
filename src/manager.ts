@@ -1,5 +1,5 @@
 import { BaseVideoSource } from './sources/index.ts';
-import { ISource, ISourceHealth, ISeriesResult } from './types/index.ts';
+import { ISource, ISourceHealth, ISeriesResult, IEpisode } from './types/index.ts';
 import { logError, logInfo, logDebug, logWarn } from "./utils/logger.ts";
 import { getConfig } from "./config/index.ts";
 import { SOURCES } from "./sources.ts";
@@ -240,12 +240,31 @@ export class VideoSourceManager {
     async getSeries(seriesId: string): Promise<ISeriesResult | null> {
         const active = this.getActiveSource();
         if (!active) return null;
-        
+
         try {
             const list = await active.getSeries(seriesId);
             return list ?? null;
         } catch (error) {
             logError(`获取系列 ${seriesId} 失败:`, error);
+            return null;
+        }
+    }
+
+    /**
+     * 获取无限系列视频列表
+     */
+    async getSeriesVideos(seriesId: string): Promise<{ episodes: IEpisode[] } | null> {
+        const active = this.getActiveSource();
+        if (!active) return null;
+
+        try {
+            const result = await active.getSeries(seriesId);
+            if (result && result.episodes) {
+                return { episodes: result.episodes };
+            }
+            return null;
+        } catch (error) {
+            logError(`获取无限系列视频 ${seriesId} 失败:`, error);
             return null;
         }
     }

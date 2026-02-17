@@ -261,6 +261,7 @@ class VideoManager {
     bindModalEvents() {
         const modalClose = DOMHelper.$('#modalClose');
         const videoModal = DOMHelper.$('#videoModal');
+        const modalContent = DOMHelper.$('.video-modal-content');
         
         if (modalClose) {
             DOMHelper.on(modalClose, 'click', () => {
@@ -274,6 +275,48 @@ class VideoManager {
                     this.closeVideoModal();
                 }
             });
+        }
+        
+        // 添加滑动关闭支持（移动端）
+        if (modalContent && 'ontouchstart' in window) {
+            let startY = 0;
+            let currentY = 0;
+            let isDragging = false;
+            
+            DOMHelper.on(modalContent, 'touchstart', (e) => {
+                // 只在模态框顶部区域允许滑动
+                const rect = modalContent.getBoundingClientRect();
+                if (e.touches[0].clientY - rect.top < 80) {
+                    startY = e.touches[0].clientY;
+                    isDragging = true;
+                    modalContent.classList.add('swiping');
+                }
+            }, { passive: true });
+            
+            DOMHelper.on(modalContent, 'touchmove', (e) => {
+                if (!isDragging) return;
+                currentY = e.touches[0].clientY;
+                const offset = Math.max(0, currentY - startY);
+                modalContent.style.setProperty('--swipe-offset', offset + 'px');
+            }, { passive: true });
+            
+            DOMHelper.on(modalContent, 'touchend', () => {
+                if (!isDragging) return;
+                isDragging = false;
+                modalContent.classList.remove('swiping');
+                
+                const offset = parseInt(modalContent.style.getPropertyValue('--swipe-offset') || '0');
+                modalContent.style.removeProperty('--swipe-offset');
+                
+                // 如果滑动距离超过 150px，关闭模态框
+                if (offset > 150) {
+                    videoModal.classList.add('swipe-close');
+                    setTimeout(() => {
+                        videoModal.classList.remove('swipe-close');
+                        this.closeVideoModal();
+                    }, 300);
+                }
+            }, { passive: true });
         }
         
         // 复制链接按钮
@@ -930,32 +973,41 @@ class VideoManager {
     createVideoCard(video) {
         const card = DOMHelper.create('div', 'video-card');
         const isSeries = video.contentType === 'series';
-        
+        const isInfinite = video.contentType === 'infinite';
+
         // 处理缩略图
-        const thumbnailUrl = video.thumbnail ? 
-            this.api.getImageProxyUrl(video.thumbnail, video.source) : 
+        const thumbnailUrl = video.thumbnail ?
+            this.api.getImageProxyUrl(video.thumbnail, video.source) :
             this.getDefaultThumbnail();
-        
+
         // 检查播放进度
         let progressBadge = '';
         if (isSeries && video.seriesInfo?.currentEpisode) {
             progressBadge = `<div class="series-progress">看到第${video.seriesInfo.currentEpisode}集</div>`;
         }
-        
+
+        // 徽章
+        let badgeHtml = '';
+        if (isInfinite) {
+            badgeHtml = '<div class="series-badge infinite-badge">无限</div>';
+        } else if (isSeries) {
+            badgeHtml = '<div class="series-badge">系列</div>';
+        }
+
         card.innerHTML = `
             <div class="video-thumbnail">
-                <img src="${thumbnailUrl}" 
-                     alt="${video.title}" 
+                <img src="${thumbnailUrl}"
+                     alt="${video.title}"
                      loading="lazy"
                      onerror="this.src='${this.getDefaultThumbnail()}'">
                 <div class="video-duration">${video.duration || '未知'}</div>
-                ${isSeries ? '<div class="series-badge">系列</div>' : ''}
+                ${badgeHtml}
                 ${progressBadge}
                 <div class="video-actions-overlay">
-                    <button class="btn btn-large btn-primary video-preview-btn" title="${isSeries ? '选集播放' : '预览'}">
-                        <i class="fas ${isSeries ? 'fa-list' : 'fa-play'}"></i>
+                    <button class="btn btn-large btn-primary video-preview-btn" title="${isInfinite ? '无限播放' : isSeries ? '选集播放' : '预览'}">
+                        <i class="fas ${isInfinite ? 'fa-infinity' : isSeries ? 'fa-list' : 'fa-play'}"></i>
                     </button>
-                    ${!isSeries ? `
+                    ${!isSeries && !isInfinite ? `
                     <button class="btn btn-large btn-success video-download-btn" title="直接下载">
                         <i class="fas fa-download"></i>
                     </button>
@@ -999,21 +1051,163 @@ class VideoManager {
         // 绑定卡片点击事件 - 只对非按钮区域生效
         DOMHelper.on(card, 'click', (e) => {
             // 如果点击的是按钮或按钮内的元素，不处理
-            if (e.target.closest('.video-actions-overlay button') || 
+            if (e.target.closest('.video-actions-overlay button') ||
                 e.target.closest('.video-preview-btn') ||
                 e.target.closest('.video-download-btn')) {
                 return;
             }
-            if (isSeries) {
+            if (isInfinite) {
+                this.startInfiniteMode(video);
+            } else if (isSeries) {
                 this.showSeriesModal(video);
             } else {
                 this.showVideoModal(video);
             }
         });
-        
+
         return card;
     }
-    
+
+    /**
+     * 开始无限播放模式
+     * @param {VideoItem} infiniteVideo
+     */
+    async startInfiniteMode(infiniteVideo) {
+        this.isInfiniteMode = true;
+        this.infiniteVideo = infiniteVideo;
+        this.infiniteQueue = [];
+        this.infiniteIndex = 0;
+
+        // 加载第一批视频
+        await this.loadInfiniteBatch();
+
+        // 开始播放第一个
+        if (this.infiniteQueue.length > 0) {
+            this.playInfiniteVideo(0);
+        }
+    }
+
+    /**
+     * 加载无限模式的视频批次
+     */
+    async loadInfiniteBatch() {
+        try {
+            this.showLoading();
+            const result = await this.api.getSeries(this.infiniteVideo.id);
+            if (result && result.episodes && result.episodes.length > 0) {
+                // episodes 中的 url 是视频链接
+                this.infiniteQueue = result.episodes;
+                this.infiniteIndex = 0;
+            }
+        } catch (error) {
+            console.error('加载无限视频批次失败:', error);
+            this.notifications.error('加载视频失败');
+        } finally {
+            this.hideLoading();
+        }
+    }
+
+    /**
+     * 播放无限模式中的视频
+     * @param {number} index
+     */
+    async playInfiniteVideo(index) {
+        if (index < 0 || index >= this.infiniteQueue.length) return;
+
+        this.infiniteIndex = index;
+        const episode = this.infiniteQueue[index];
+
+        // 打开模态框
+        const modal = DOMHelper.$('#videoModal');
+        const modalTitle = DOMHelper.$('#modalTitle');
+        const videoPlayer = DOMHelper.$('#videoPlayer');
+        const videoDetailInfo = DOMHelper.$('#videoDetailInfo');
+        const qualitySelection = DOMHelper.$('#qualitySelection');
+
+        if (!modal || !videoPlayer) return;
+
+        modalTitle.textContent = `${this.infiniteVideo.title} - ${index + 1}/${this.infiniteQueue.length}`;
+        videoPlayer.innerHTML = '<div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #666;">正在加载...</div>';
+        videoDetailInfo.innerHTML = '';
+        qualitySelection.innerHTML = '';
+
+        // 显示无限模式控制
+        videoDetailInfo.innerHTML = `
+            <div class="infinite-controls">
+                <span class="infinite-progress"><i class="fas fa-infinity"></i> ${index + 1} / ${this.infiniteQueue.length}</span>
+                <button class="btn btn-secondary btn-lg" id="infinitePrev" ${index === 0 ? 'disabled' : ''}>
+                    <i class="fas fa-step-backward"></i>
+                </button>
+                <button class="btn btn-secondary btn-lg" id="infiniteNext">
+                    <i class="fas fa-step-forward"></i>
+                </button>
+            </div>
+        `;
+
+        DOMHelper.show(modal);
+
+        // 绑定控制按钮
+        const prevBtn = videoDetailInfo.querySelector('#infinitePrev');
+        const nextBtn = videoDetailInfo.querySelector('#infiniteNext');
+        if (prevBtn) {
+            DOMHelper.on(prevBtn, 'click', () => this.playInfiniteVideo(index - 1));
+        }
+        if (nextBtn) {
+            DOMHelper.on(nextBtn, 'click', () => this.playInfiniteVideo(index + 1));
+        }
+
+        try {
+            this.showLoading();
+            // episode.url 是视频链接，直接解析
+            const parseResult = await this.api.parseVideo(episode.url, this.infiniteVideo.source);
+            const results = parseResult.results || [];
+
+            if (results && results.length > 0) {
+                videoPlayer.innerHTML = '';
+                await this.playerManager.initPlayer(videoPlayer, {
+                    title: `${this.infiniteVideo.title} - ${episode.title || `第${index + 1}个`}`,
+                    url: episode.url,
+                    source: this.infiniteVideo.source,
+                    thumbnail: episode.thumbnail || this.infiniteVideo.thumbnail
+                }, {
+                    isInfinite: true,
+                    onEnded: () => this.handleInfiniteEnded(),
+                    onPrev: () => this.playInfiniteVideo(index - 1),
+                    onNext: () => this.playInfiniteVideo(index + 1)
+                });
+                this.playerManager.setQualities(results);
+                this.renderQualitySelection(results);
+            } else {
+                videoPlayer.innerHTML = '<div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #666;">无法获取播放链接</div>';
+            }
+        } catch (error) {
+            console.error('播放无限视频失败:', error);
+            videoPlayer.innerHTML = '<div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #666;">播放失败</div>';
+        } finally {
+            this.hideLoading();
+        }
+    }
+
+    /**
+     * 处理无限模式视频播放结束
+     */
+    async handleInfiniteEnded() {
+        if (!this.isInfiniteMode) return;
+
+        // 还有下一个
+        if (this.infiniteIndex < this.infiniteQueue.length - 1) {
+            this.playInfiniteVideo(this.infiniteIndex + 1);
+        } else {
+            // 当前批次播完，加载新批次
+            await this.loadInfiniteBatch();
+            if (this.infiniteQueue.length > 0) {
+                this.playInfiniteVideo(0);
+            } else {
+                this.notifications.info('没有更多视频了');
+            }
+        }
+    }
+
     /**
      * 显示系列详情模态框（选集）
      * @param {VideoItem} seriesVideo
@@ -1104,6 +1298,9 @@ class VideoManager {
                             <button class="btn btn-small btn-primary" id="downloadSelectedEpisodes">
                                 <i class="fas fa-download"></i> 下载选中
                             </button>
+                            <button class="btn btn-small btn-primary" id="artFullScreen">
+                                <i class="fas fa-fullscreen"></i> 全屏
+                            </button>
                             <div class="episodes-count">共 ${detail.episodes.length} 集</div>
                         </div>
                     </div>
@@ -1174,6 +1371,12 @@ class VideoManager {
             const downloadBtn = videoPlayer.querySelector('#downloadSelectedEpisodes');
             if (downloadBtn) {
                 DOMHelper.on(downloadBtn, 'click', () => this.downloadSelectedEpisodes(seriesVideo));
+            }
+
+            // 绑定全屏
+            const fullscreenBtn = videoPlayer.querySelector('#artFullScreen');
+            if (fullscreenBtn) {
+                DOMHelper.on(fullscreenBtn, 'click', () => this.playerManager.player.fullscreen = true);
             }
         } catch (error) {
             console.error('加载系列详情失败:', error);
@@ -1476,7 +1679,7 @@ class VideoManager {
      * @returns {string}
      */
     getDefaultThumbnail() {
-        return 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzIwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZGRkIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIxNCIgZmlsbD0iIzk5OSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9Ii4zZW0iPuaXoOe8qeedgOWbvueJhzwvdGV4dD48L3N2Zz4=';
+        return '/default.webp';
     }
     
     /**

@@ -153,7 +153,16 @@ class APIManager {
     async getSeriesDetail(series) {
         return this.get('/api/series/' + series);
     }
-    
+
+    /**
+     * 获取无限系列视频列表（用于无限播放模式）
+     * @param {string} seriesId
+     * @returns {Promise<{episodes: Array<{id: string, title: string, url: string}>}>}
+     */
+    async getSeries(seriesId) {
+        return this.get('/api/series/' + seriesId + '/videos');
+    }
+
     /**
      * 搜索视频
      * @param {string} query

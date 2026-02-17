@@ -183,7 +183,11 @@ class ThemeManager {
         /** @type {HTMLElement|null} */
         this.themeToggle = DOMHelper.$('#themeToggle');
         /** @type {HTMLElement|null} */
+        this.mobileThemeToggle = DOMHelper.$('#mobileThemeToggle');
+        /** @type {HTMLElement|null} */
         this.themeIcon = DOMHelper.$('.theme-icon');
+        /** @type {HTMLElement|null} */
+        this.mobileThemeIcon = DOMHelper.$('#mobileThemeToggle i');
         /** @type {'light'|'dark'} */
         this.currentTheme = 'light';
 
@@ -194,20 +198,25 @@ class ThemeManager {
      * 初始化主题管理器
      */
     init() {
-        if (!this.themeToggle || !this.themeIcon) {
-            console.warn('Theme elements not found');
-            return;
-        }
-
         // 从本地存储加载主题
         const savedTheme = localStorage.getItem('theme') || 'light';
         this.setTheme(savedTheme);
 
-        // 绑定切换事件
-        DOMHelper.on(this.themeToggle, 'click', () => {
-            const newTheme = this.currentTheme === 'light' ? 'dark' : 'light';
-            this.setTheme(newTheme);
-        });
+        // 绑定桌面端切换事件
+        if (this.themeToggle) {
+            DOMHelper.on(this.themeToggle, 'click', () => {
+                const newTheme = this.currentTheme === 'light' ? 'dark' : 'light';
+                this.setTheme(newTheme);
+            });
+        }
+
+        // 绑定移动端切换事件
+        if (this.mobileThemeToggle) {
+            DOMHelper.on(this.mobileThemeToggle, 'click', () => {
+                const newTheme = this.currentTheme === 'light' ? 'dark' : 'light';
+                this.setTheme(newTheme);
+            });
+        }
     }
 
     /**
@@ -218,12 +227,21 @@ class ThemeManager {
         this.currentTheme = theme;
         document.documentElement.setAttribute('data-theme', theme);
 
-        // 更新图标
+        // 更新桌面端图标
         if (this.themeIcon) {
             if (theme === 'dark') {
                 this.themeIcon.className = 'fas fa-sun theme-icon';
             } else {
                 this.themeIcon.className = 'fas fa-moon theme-icon';
+            }
+        }
+
+        // 更新移动端图标
+        if (this.mobileThemeIcon) {
+            if (theme === 'dark') {
+                this.mobileThemeIcon.className = 'fas fa-sun';
+            } else {
+                this.mobileThemeIcon.className = 'fas fa-moon';
             }
         }
 

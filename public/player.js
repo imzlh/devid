@@ -275,6 +275,10 @@ class VideoPlayerManager {
         if (this.currentEpisodeIndex === -1) this.currentEpisodeIndex = 0;
         this.onClose = options.onClose || null;
         this.onEpisodeChange = options.onEpisodeChange || null;
+        this.onEnded = options.onEnded || null;
+        this.onPrev = options.onPrev || null;
+        this.onNext = options.onNext || null;
+        this.isInfinite = options.isInfinite || false;
 
         if (typeof Artplayer === 'undefined') {
             throw new Error('ArtPlayer未加载');
@@ -406,10 +410,23 @@ class VideoPlayerManager {
             }
         });
 
-        // 播放完成，自动播放下一集
+        // 播放完成，自动播放下一集或触发 onEnded
         this.player.on('video:ended', () => {
-            this.playNextEpisode();
+            if (this.isInfinite && this.onEnded) {
+                // 无限模式：触发 onEnded 回调
+                this.onEnded();
+            } else {
+                // 普通模式：自动播放下一集
+                this.playNextEpisode();
+            }
         });
+
+        // 无限模式：自动进入网页全屏
+        if (this.isInfinite) {
+            this.player.once('ready', () => {
+                this.player.fullscreenWeb = true;
+            });
+        }
 
         return this.player;
     }
@@ -418,6 +435,12 @@ class VideoPlayerManager {
      * 播放上一集
      */
     playPrevEpisode() {
+        // 无限模式：使用 onPrev 回调
+        if (this.isInfinite && this.onPrev) {
+            this.onPrev();
+            return;
+        }
+        // 普通模式：使用剧集列表
         if (this.currentEpisodeIndex > 0 && this.onEpisodeChange) {
             const prevIndex = this.currentEpisodeIndex - 1;
             this.onEpisodeChange(this.episodes[prevIndex], prevIndex);
@@ -428,6 +451,12 @@ class VideoPlayerManager {
      * 播放下一集
      */
     playNextEpisode() {
+        // 无限模式：使用 onNext 回调
+        if (this.isInfinite && this.onNext) {
+            this.onNext();
+            return;
+        }
+        // 普通模式：使用剧集列表
         if (this.episodes && this.currentEpisodeIndex < this.episodes.length - 1 && this.onEpisodeChange) {
             const nextIndex = this.currentEpisodeIndex + 1;
             this.onEpisodeChange(this.episodes[nextIndex], nextIndex);

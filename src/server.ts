@@ -55,7 +55,7 @@ app.use(async (ctx, next) => {
     await next();
     const ms = Date.now() - start;
     if (!taskId) {
-        console.info(`${ctx.request.method} ${ctx.request.url} - ${ctx.response.status} - ${ms}ms`);
+        console.info(`${ctx.request.method} ${new URL(ctx.request.url).href} - ${ctx.response.status} - ${ms}ms`);
     }
 });
 
@@ -92,7 +92,7 @@ router.get('/api/sources/health', (ctx) => {
 router.post('/api/sources/:id/reinit', async (ctx) => {
     try {
         const sourceId = ctx.params.id;
-        
+
         if (!validateRequiredString(sourceId, 'sourceId')) {
             ctx.response.status = 400;
             ctx.response.body = { error: '缺少或无效的视频源ID' };
@@ -101,8 +101,8 @@ router.post('/api/sources/:id/reinit', async (ctx) => {
 
         logInfo(`重新初始化视频源: ${sourceId}`);
         const success = await videoSourceManager.initSource(sourceId);
-        
-        ctx.response.body = { 
+
+        ctx.response.body = {
             success,
             health: videoSourceManager.getHealthStatus()[sourceId]
         };
@@ -260,6 +260,35 @@ router.get('/api/series/:id', async (ctx) => {
     }
 });
 
+// 获取无限系列视频列表（用于无限播放模式）
+router.get('/api/series/:id/videos', async (ctx) => {
+    try {
+        const seriesId = ctx.params.id;
+
+        if (!seriesId) {
+            ctx.response.status = 400;
+            ctx.response.body = { error: '缺少系列ID' };
+            return;
+        }
+
+        logDebug(`获取无限系列视频: ${seriesId}`);
+
+        // 调用源的 getSeries 方法获取视频列表
+        const result = await videoSourceManager.getSeriesVideos(seriesId);
+        if (!result) {
+            ctx.response.status = 404;
+            ctx.response.body = { error: '系列不存在' };
+            return;
+        }
+
+        ctx.response.body = result;
+    } catch (error) {
+        logError('获取无限系列视频失败:', error);
+        ctx.response.status = 500;
+        ctx.response.body = { error: '获取无限系列视频失败' };
+    }
+});
+
 // 解析视频链接
 router.post('/api/parse-video', async (ctx) => {
     try {
@@ -335,8 +364,8 @@ async function handleProxyRequest(
 ): Promise<ProxyResponse> {
     try {
         const originalUrl = decodeURIComponent(encodedUrl);
-        if (!task_id)
-            logInfo(`Proxy request: ${originalUrl}, referer: ${referer || 'none'}, range: ${range || 'none'}`);
+        // if (!task_id)
+        //     logInfo(`Proxy request: ${originalUrl}, referer: ${referer || 'none'}, range: ${range || 'none'}`);
 
         // 准备请求头
         const requestHeaders: Record<string, string> = {
@@ -349,9 +378,10 @@ async function handleProxyRequest(
             requestHeaders['Range'] = range;
         }
 
-        // 获取原始内容
+        // 获取原始内容（使用更长的超时时间，适合大文件下载）
         const response = await fetch2(originalUrl, {
             headers: requestHeaders,
+            timeout: 300000, // 5分钟超时，适合大文件
         });
 
         // 处理 206 Partial Content（Range 请求成功）
@@ -396,8 +426,7 @@ async function handleProxyRequest(
 
             // mark
             if (task_id) {
-                const durations = manifest.segments.map(s => s.duration);
-                downloadManager.markStart(task_id, manifest.segments.length, durations);
+                downloadManager.markStart(task_id, manifest.segments.length);
             }
 
             return {
@@ -422,29 +451,26 @@ async function handleProxyRequest(
                 data: fixed,
                 contentType: 'video/mp2t',
                 status: response.status,
-                headers: responseHeaders,
+                // 不透传 Content-Length，因为 fixTSStream 可能修改数据大小
+                headers: (() => {
+                    const { 'Content-Length': _, ...rest } = responseHeaders;
+                    return rest;
+                })(),
             };
         }
 
         // 回退到正常（直接视频文件下载）
-        if (!response.body) 
+        if (!response.body)
             throw new Error('The response from upstream has no body');
         let targetStream = response.body;
         const contentLen = parseInt(response.headers.get('content-length') || '0');
         if (task_id && contentLen) {
             let written = 0;
-            // 对于大文件使用更平滑的进度更新（每1%更新一次）
-            let lastReportedPercent = 0;
             const transform = new TransformStream<Uint8Array<ArrayBuffer>>({
                 transform(chunk, ctrl) {
                     ctrl.enqueue(chunk);
                     written += chunk.byteLength;
-                    const currentPercent = Math.floor((written * 100) / contentLen);
-                    // 每1%或完成时更新一次，避免频繁更新
-                    if (currentPercent > lastReportedPercent || written >= contentLen) {
-                        lastReportedPercent = currentPercent;
-                        downloadManager.setProgressByBytes(task_id, written, contentLen);
-                    }
+                    downloadManager.setProgress(task_id, written / contentLen);
                 }
             });
             response.body.pipeTo(transform.writable);
@@ -648,10 +674,10 @@ router.post('/api/downloads/:id/start', async (ctx) => {
 
         // 开始下载（非阻塞，立即返回）
         const success = downloadManager.startDownload(taskId);
-        
+
         logInfo(`下载任务 ${taskId} 已加入队列`);
-        ctx.response.body = { 
-            success: true, 
+        ctx.response.body = {
+            success: true,
             message: '任务已加入下载队列',
             task: downloadManager.getDownloadTask(taskId)
         };
@@ -801,19 +827,19 @@ router.post('/api/downloads/clear-completed', async (ctx) => {
     try {
         const body = await ctx.request.body.json().catch(() => ({}));
         const deleteFiles = body.deleteFiles === true;
-        
+
         logDebug(`清除已完成下载任务, 删除文件: ${deleteFiles}`);
 
         const result = downloadManager.clearCompletedDownloads(deleteFiles);
-        
+
         if (result.count > 0) {
             logInfo(`已清除 ${result.count} 个已完成下载任务，删除 ${result.deletedFiles} 个文件`);
             await downloadManager.saveToKV();
         } else {
             logInfo('没有可清除的已完成下载任务');
         }
-        
-        ctx.response.body = { 
+
+        ctx.response.body = {
             success: result.count > 0,
             clearedCount: result.count,
             deletedFiles: result.deletedFiles
@@ -830,7 +856,7 @@ router.get('/api/health', (ctx) => {
     const sourcesHealth = videoSourceManager.getHealthStatus();
     const healthySources = Object.values(sourcesHealth).filter(h => h.status === 'healthy').length;
     const totalSources = Object.keys(sourcesHealth).length;
-    
+
     ctx.response.body = {
         status: healthySources > 0 ? 'ok' : 'degraded',
         timestamp: new Date().toISOString(),
@@ -914,10 +940,10 @@ setInterval(async () => {
 // 优雅关闭处理
 const gracefulShutdown = async () => {
     logInfo('正在关闭服务器...');
-    
+
     // 停止健康检查
     videoSourceManager.stopHealthCheck();
-    
+
     // 保存下载任务
     try {
         await downloadManager.saveToKV();
@@ -925,10 +951,10 @@ const gracefulShutdown = async () => {
     } catch (error) {
         logError('保存下载任务失败:', error);
     }
-    
+
     // 停止清理定时器
     downloadManager.stopCleanupTimer();
-    
+
     logInfo('服务器已关闭');
     Deno.exit(0);
 };

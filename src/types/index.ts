@@ -1,5 +1,5 @@
 // 内容类型
-export type IContentType = 'video' | 'series';
+export type IContentType = 'video' | 'series' | 'infinite';
 
 // 系列类型
 export type ISeriesType = 'anime' | 'drama' | 'movie' | 'variety' | 'documentary' | 'other';

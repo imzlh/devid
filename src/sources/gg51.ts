@@ -1,6 +1,6 @@
 import { BaseVideoSource, ImageData } from './index.ts';
 import { IVideoItem, IVideoList, IM3U8Result } from '../types/index.ts';
-import { fetch2, getImage as fetchImage, findAvailableFast } from '../utils/fetch.ts';
+import { fetch2, getImage as fetchImage, findAvailableFast, getDocument } from '../utils/fetch.ts';
 import { Document, DOMParser } from "dom";
 import { logError, logInfo } from "../utils/logger.ts";
 import assert from "node:assert";
@@ -45,13 +45,17 @@ export default class GG51VideoSource extends BaseVideoSource {
     }
 
     private async getEncodedPage(url: string): Promise<string> {
-        const response = await fetch2(url);
-        const html = await response.text();
-        const scriptMatch = html.match(/document\.write\(decodeURIComponent\("([^"]+)"\)\)/);
-        if (!scriptMatch) {
-            throw new Error('无法解析页面内容');
-        }
-        return decodeURIComponent(scriptMatch[1]);
+        const response = await getDocument(url);
+        const mainScript = response.getElementsByTagName('script')
+            .find(e => e.innerText.length > 1000);
+
+        // start a sandbox
+        return new Promise(rs => {
+            const document = {
+                write: (text: string) => rs(text)
+            };
+            new Function('document', mainScript!.innerText)(document);
+        });
     }
 
     // 获取主页视频列表

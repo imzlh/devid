@@ -39,7 +39,7 @@ interface FetchResponse extends Response {
  * @returns Promise<Document>
  */
 export async function getDocument(
-    url: string,
+    url: string | URL,
     options: FetchOptions = {}
 ): Promise<Document> {
     if (typeof options.referrer == 'string' && options.headers) {
@@ -129,8 +129,10 @@ export async function fetch2(
                     ...fetchOptions,
                     headers,
                     signal: controller.signal,
-                    redirect: "manual" // 手动处理重定向
+                    redirect: "manual", // 手动处理重定向
                 });
+                // 获取到响应后清除超时，允许大文件下载完成
+                clearTimeout(timeoutId);
             }catch(e){
                 if (options.noRetry) throw e;
                 console.warn(`请求失败，重试 ${redirectCount += 1} 次: ${e}`);
