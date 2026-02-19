@@ -21,6 +21,14 @@
 - 现代化的Web界面
 - 在线视频播放（支持多种清晰度切换）
 
+## 支持源
+ - agefans动漫（推荐）
+ - 海贼王（推荐）
+ - SMWeiaona（推荐）
+ - 17c（推荐）
+ - GG51
+ - akianime动漫（还有很多与这个源高度相似的，可以以此扩展）
+
 ## 技术栈
 
 - 后端：Deno + Hono + WebSocket
@@ -59,9 +67,8 @@ vdown/
 ├── deno.json              # Deno配置文件
 ├── main.ts                # 主入口文件
 ├── src/
-│   ├── sources/           # 视频源实现
+│   ├── sources/           # 视频源实现(省略具体源)
 │   │   ├── base.ts        # 视频源基类
-│   │   ├── gg51.ts        # GG51视频源实现
 │   │   └── manager.ts     # 视频源管理器
 │   ├── types/             # 类型定义
 │   │   └── index.ts
@@ -125,7 +132,8 @@ vdown/
 ### WebSocket 连接
 
 ```javascript
-ws://localhost:9876/ws
+// 使用简单的RPC协议。可以参照 public/websocket.js
+new WebSocket("ws://localhost:9876/ws");
 ```
 
 ### RPC 方法示例
