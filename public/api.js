@@ -38,6 +38,7 @@
 
 /**
  * API管理类
+ * 优先使用WebSocket RPC，不可用则回退到HTTP
  */
 class APIManager {
     constructor(baseURL = '') {
@@ -45,6 +46,59 @@ class APIManager {
         this.baseURL = baseURL;
         /** @type {number} */
         this.requestTimeout = 30000;
+        /** @type {boolean} */
+        this.useWebSocket = false;
+    }
+
+    /**
+     * 设置WebSocket客户端
+     * @param {WebSocketRPCClient} wsClient
+     */
+    setWebSocketClient(wsClient) {
+        this.wsClient = wsClient;
+        this.updateWebSocketState();
+    }
+
+    /**
+     * 更新WebSocket状态
+     */
+    updateWebSocketState() {
+        if (this.wsClient) {
+            this.useWebSocket = this.wsClient.connected;
+        } else {
+            this.useWebSocket = false;
+        }
+    }
+
+    /**
+     * 调用API（优先WebSocket，回退HTTP）
+     * @param {string} rpcMethod - RPC方法名
+     * @param {unknown[]} rpcParams - RPC参数
+     * @param {string} httpUrl - HTTP URL
+     * @param {RequestInit} httpOptions - HTTP选项
+     * @returns {Promise<any>}
+     */
+    async call(rpcMethod, rpcParams, httpUrl, httpOptions) {
+        // 每次调用前更新WebSocket状态
+        this.updateWebSocketState();
+
+        // 优先尝试WebSocket
+        if (this.useWebSocket && this.wsClient && this.wsClient.connected) {
+            try {
+                const result = await this.wsClient.call(rpcMethod, rpcParams);
+                return result;
+            } catch (error) {
+                console.warn(`WebSocket调用失败，回退到HTTP: ${rpcMethod}`, error);
+                this.useWebSocket = false;
+            }
+        }
+
+        // 回退到HTTP
+        if (httpOptions) {
+            return this.request(httpUrl, httpOptions);
+        } else {
+            return this.get(httpUrl);
+        }
     }
     
     /**
@@ -136,24 +190,27 @@ class APIManager {
      * @returns {Promise<{sources: VideoSource[]}>}
      */
     async getSources() {
-        return this.get('/api/sources');
+        return this.call('sources.getAll', [], '/api/sources');
     }
-    
+
     /**
      * 设置活动视频源
      * @param {string} source
      * @returns {Promise<any>}
      */
     async setActiveSource(source) {
-        return this.post('/api/sources/active', { id: source });
+        return this.call('sources.setActive', [source], '/api/sources/active', {
+            method: 'POST',
+            body: JSON.stringify({ id: source })
+        });
     }
-    
+
     /**
      * 获取当前活动视频源
      * @returns {Promise<VideoSource>}
      */
     async getActiveSource() {
-        return this.get('/api/sources/active');
+        return this.call('sources.getActive', [], '/api/sources/active');
     }
     
     // 视频内容API
@@ -163,7 +220,7 @@ class APIManager {
      * @returns {Promise<{videos: VideoItem[], currentPage: number, totalPages: number}>}
      */
     async getHomeVideos(page = 1) {
-        return this.get(`/api/home-videos?page=${page}`);
+        return this.call('videos.getHome', [page], `/api/home-videos?page=${page}`);
     }
 
     /**
@@ -174,7 +231,7 @@ class APIManager {
      */
     async getSeriesDetail(seriesId, url) {
         const urlParam = url ? `?url=${encodeURIComponent(url)}` : '';
-        return this.get('/api/series/' + seriesId + urlParam);
+        return this.call('series.getDetail', [seriesId, url], '/api/series/' + seriesId + urlParam);
     }
 
     /**
@@ -183,7 +240,7 @@ class APIManager {
      * @returns {Promise<{episodes: Array<{id: string, title: string, url: string}>}>}
      */
     async getSeries(seriesId) {
-        return this.get('/api/series/' + seriesId + '/videos');
+        return this.call('series.getVideos', [seriesId], '/api/series/' + seriesId + '/videos');
     }
 
     /**
@@ -193,9 +250,9 @@ class APIManager {
      * @returns {Promise<{videos: VideoItem[], currentPage: number, totalPages: number}>}
      */
     async searchVideos(query, page = 1) {
-        return this.get(`/api/search?q=${encodeURIComponent(query)}&page=${page}`);
+        return this.call('videos.search', [query, page], `/api/search?q=${encodeURIComponent(query)}&page=${page}`);
     }
-    
+
     /**
      * 解析视频
      * @param {string} url
@@ -203,7 +260,10 @@ class APIManager {
      * @returns {Promise<{results: M3U8Result[]}>}
      */
     async parseVideo(url, source) {
-        return this.post('/api/parse-video', { url, source });
+        return this.call('videos.parse', [url], '/api/parse-video', {
+            method: 'POST',
+            body: JSON.stringify({ url, source })
+        });
     }
     
     // 下载管理API
@@ -215,58 +275,69 @@ class APIManager {
      * @returns {Promise<{task: DownloadTask}>}
      */
     async createDownload(title, m3u8Url, outputPath, referer) {
-        return this.post('/api/downloads', { title, url: m3u8Url, outputPath, referer });
+        return this.call('downloads.create', [title, m3u8Url, outputPath, referer], '/api/downloads', {
+            method: 'POST',
+            body: JSON.stringify({ title, url: m3u8Url, outputPath, referer })
+        });
     }
-    
+
     /**
      * 开始下载
      * @param {string} id
      * @returns {Promise<any>}
      */
     async startDownload(id) {
-        return this.post(`/api/downloads/${id}/start`);
+        return this.call('downloads.start', [id], `/api/downloads/${id}/start`, {
+            method: 'POST'
+        });
     }
-    
+
     /**
      * 获取下载列表
      * @returns {Promise<{tasks: DownloadTask[]}>}
      */
     async getDownloads() {
-        return this.get('/api/downloads');
+        return this.call('downloads.getAll', [], '/api/downloads');
     }
-    
+
     /**
      * 取消下载
      * @param {string} id
      * @returns {Promise<any>}
      */
     async cancelDownload(id) {
-        return this.post(`/api/downloads/${id}/cancel`);
+        return this.call('downloads.cancel', [id], `/api/downloads/${id}/cancel`, {
+            method: 'POST'
+        });
     }
-    
+
     /**
      * 重试下载
      * @param {string} id
      * @returns {Promise<any>}
      */
     async retryDownload(id) {
-        return this.post(`/api/downloads/${id}/retry`);
+        return this.call('downloads.retry', [id], `/api/downloads/${id}/retry`, {
+            method: 'POST'
+        });
     }
-    
+
     /**
      * 清除已完成下载
      * @returns {Promise<any>}
      */
     async clearCompletedDownloads() {
-        return this.post('/api/downloads/clear-completed');
+        return this.call('downloads.clearCompleted', [], '/api/downloads/clear-completed', {
+            method: 'POST'
+        });
     }
-    
+
     /**
      * 健康检查
      * @returns {Promise<any>}
      */
     async healthCheck() {
-        return this.get('/api/health');
+        return this.call('health.get', [], '/api/health');
     }
     
     /**

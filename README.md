@@ -23,7 +23,7 @@
 
 ## 技术栈
 
-- 后端：Deno + Oak
+- 后端：Deno + Hono + WebSocket
 - 前端：原生HTML/CSS/JavaScript + ArtPlayer
 - 下载：FFmpeg（需要系统安装）
 
@@ -72,11 +72,18 @@ vdown/
 │   │   ├── logger.ts      # 日志工具
 │   │   ├── validation.ts  # 参数验证工具
 │   │   └── check.ts       # 检查工具
+│   ├── websocket/         # WebSocket RPC
+│   │   ├── rpc.ts         # RPC服务器
+│   │   └── push.ts        # 推送服务
 │   └── server.ts          # 服务器主文件
 └── public/                # 前端静态文件
     ├── index.html         # 主页面
     ├── style.css          # 样式文件
-    └── app.js             # 前端JavaScript
+    ├── app.js             # 前端JavaScript
+    ├── api.js             # API客户端
+    ├── player.js          # 播放器组件
+    ├── utils.js           # 前端工具函数
+    └── websocket.js       # WebSocket RPC客户端
 ```
 
 ## M3U8处理
@@ -105,6 +112,33 @@ vdown/
 4. **全屏播放**：支持全屏和网页全屏模式
 5. **播放速度控制**：支持调整播放速度
 6. **快捷键支持**：支持键盘快捷键控制
+7. **跳过代理播放**：支持直接播放（使用CORS）
+
+## WebSocket RPC
+
+后端提供 WebSocket RPC 接口，支持实时推送：
+
+- **下载状态推送**：实时获取下载进度更新
+- **视频源切换推送**：源切换时主动通知前端
+- **RPC 方法**：所有 HTTP API 都有对应的 RPC 版本
+
+### WebSocket 连接
+
+```javascript
+ws://localhost:9876/ws
+```
+
+### RPC 方法示例
+
+```javascript
+// 调用 RPC 方法
+const result = await wsClient.call("videos.search", ["query", 1]);
+
+// 监听推送
+wsClient.onPush("downloads.update", (data) => {
+    console.log("下载更新:", data);
+});
+```
 
 ## 添加新的视频源
 
@@ -119,7 +153,7 @@ vdown/
 
 ```typescript
 import { BaseVideoSource } from './base.ts';
-import { VideoItem, SearchResult, M3U8Result } from '../types/index.ts';
+import { VideoItem, SearchResult, IM3U8Result, ISeriesResult } from '../types/index.ts';
 
 export class MyVideoSource extends BaseVideoSource {
   constructor() {
@@ -127,20 +161,26 @@ export class MyVideoSource extends BaseVideoSource {
     super('my-source', '我的视频源', 'https://my-video-site.com', false);
   }
 
-  async getHomeVideos(): Promise<VideoItem[]> {
+  async getHomeVideos(page?: number): Promise<ISearchResult> {
     // 实现获取主页视频的逻辑
   }
 
-  async searchVideos(query: string, page: number = 1): Promise<SearchResult> {
+  async searchVideos(query: string, page?: number): Promise<ISearchResult> {
     // 实现搜索视频的逻辑
   }
 
-  async parseVideoUrl(url: string): Promise<M3U8Result[]> {
+  async parseVideoUrl(url: string): Promise<IM3U8Result[]> {
     // 实现解析视频链接的逻辑
+    // 返回的 IM3U8Result 支持以下选项：
+    // - url: 视频URL
+    // - quality: 清晰度
+    // - referrer: 用于前端?referer参数
+    // - skipProxy: 是否跳过代理，直接使用原始URL播放
   }
 
-  async getSeries(series: string): Promise<ISeriesResult> {
+  async getSeries(seriesId: string, url?: string): Promise<ISeriesResult> {
     // 可选，只有当启用时才需要实现
+    // 可以同时接收ID和URL，源自行选择合适的方法
   }
 }
 ```

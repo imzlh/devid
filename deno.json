@@ -1,4 +1,7 @@
 {
+  "name": "devid",
+  "version": "1.0.0",
+  "license": "MIT",
   "tasks": {
     "dev": "deno run --watch -A main.ts",
     "start": "deno run -A main.ts"
@@ -9,7 +12,8 @@
     "@std/encoding": "jsr:@std/encoding@^1.0.10",
     "@std/http": "jsr:@std/http@1",
     "@takker/md5": "jsr:@takker/md5@^0.1.0",
-    "oak": "jsr:@oak/oak@^16.0.0",
+    "hono": "jsr:@hono/hono@^4.7.0",
+    "@hono/node-ws": "npm:@hono/node-ws@^1.1.0",
     "dom": "jsr:@b-fuze/deno-dom@^0.1.44",
     "jsencrypt": "https://cdn.jsdelivr.net/npm/jsencrypt@3.5.4/+esm"
   },

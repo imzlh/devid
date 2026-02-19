@@ -107,17 +107,24 @@ class ProgressManager {
      * @param {Object} watchRecord - 观看记录
      */
     addRecentWatch(watchRecord) {
-        // 移除重复记录（同一视频）
-        this.recentWatch = this.recentWatch.filter(r => r.id !== watchRecord.id);
-        
+        // 移除重复记录
+        // 对于系列视频，按 seriesId 去重；对于普通视频，按 id 去重
+        if (watchRecord.seriesId) {
+            // 系列视频：移除同一系列的其他记录
+            this.recentWatch = this.recentWatch.filter(r => r.seriesId !== watchRecord.seriesId);
+        } else {
+            // 普通视频：移除同一视频的记录
+            this.recentWatch = this.recentWatch.filter(r => r.id !== watchRecord.id || r.seriesId);
+        }
+
         // 添加到开头
         this.recentWatch.unshift(watchRecord);
-        
+
         // 只保留最近20条
         if (this.recentWatch.length > 20) {
             this.recentWatch = this.recentWatch.slice(0, 20);
         }
-        
+
         this.saveRecentWatch();
     }
 

@@ -178,20 +178,21 @@ export default class AkiAnimeAPI extends BaseVideoSource {
     override async searchVideos(query: string, page?: number): Promise<IVideoList> {
         const doc = await getDocument(new URL(`/bgmsearch/${encodeURIComponent(query)}----------${page}---.html`, this.baseUrl));
         const res: IVideoItem[] = [];
-        for (const el of doc.querySelector('.vod-detail')?.children!) {
+        for (const el of doc.querySelectorAll('.vod-detail')) {
             const link = el.querySelector('a[target="_blank"]');
             const namel = el.querySelector('.slide-info-title')
             const img = el.querySelector('img.gen-movie-img');
 
             if (!link || !namel || !img) continue;
-            const match = link.getAttribute('href')?.match(/\/bgmdetail\/([A-Z0-9]+)\.html/);
+            const match = link.getAttribute('href')?.match(/\/bgmdetail\/([A-Za-z0-9]+)\.html/);
             if (!match) continue;
             res.push({
                 thumbnail: new URL(img.getAttribute('data-src')!, this.baseUrl).href,
                 title: namel.textContent!,
                 url: new URL(link.getAttribute('href')!, this.baseUrl).href,
                 source: this.sourceId,
-                id: match[1]
+                id: match[1],
+                contentType: 'series'
             });
         }
 

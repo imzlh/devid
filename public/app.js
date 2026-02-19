@@ -9,38 +9,40 @@ class VideoManager {
     constructor() {
         /** @type {APIManager} */
         this.api = new APIManager();
+        /** @type {WebSocketRPCClient} */
+        this.wsClient = new WebSocketRPCClient();
         /** @type {NotificationManager} */
         this.notifications = new NotificationManager();
         /** @type {ThemeManager} */
         this.themeManager = new ThemeManager();
         /** @type {VideoPlayerManager} */
         this.playerManager = new VideoPlayerManager();
-        
+
         /** @type {PageType} */
         this.currentPage = 'home';
         /** @type {VideoSource|null} */
         this.currentSource = null;
         /** @type {string} */
         this.searchQuery = '';
-        
+
         /** @type {Object} */
         this.pagination = {
             home: { current: 1, total: 1 },
             search: { current: 1, total: 1 }
         };
-        
+
         /** @type {number|null} */
         this.downloadInterval = null;
         /** @type {number|null} */
         this.sourceSyncInterval = null;
         /** @type {boolean} */
         this.isInitialized = false;
-        
+
         /** @type {Object|null} 当前正在播放的系列视频 */
         this.currentSeriesVideo = null;
         /** @type {Array} 当前剧集列表 */
         this.currentEpisodes = [];
-        
+
         /** @type {Object} 页面数据缓存 */
         this.pageCache = {
             home: { loaded: false, timestamp: 0 },
@@ -180,22 +182,24 @@ class VideoManager {
                     document.addEventListener('DOMContentLoaded', resolve);
                 });
             }
-            
+
             this.bindEvents();
             await this.loadActiveSource();
-            
+
             // 启动源状态同步定时器（每隔30秒同步一次）
             this.startSourceSync();
-            
+
             // 设置应用已初始化标志，以便哈希路由可以正常工作
             this.isInitialized = true;
-            
+
             // 加载URL哈希参数
             this.loadFromHash();
-            
+
             await this.loadHomePage();
-            this.startDownloadMonitoring();
-            
+
+            // 启动WebSocket连接（替代轮询）
+            this.initWebSocket();
+
             // 健康检查
             try {
                 await this.api.healthCheck();
@@ -206,6 +210,82 @@ class VideoManager {
         } catch (error) {
             console.error('应用初始化失败:', error);
             this.notifications.error('应用初始化失败');
+        }
+    }
+
+    /**
+     * 初始化WebSocket连接
+     */
+    async initWebSocket() {
+        try {
+            const wsUrl = `ws://${window.location.host}/ws`;
+            await this.wsClient.connect(wsUrl);
+            console.log('WebSocket已连接');
+
+            // 将WebSocket客户端设置到API管理器
+            this.api.setWebSocketClient(this.wsClient);
+
+            // 注册推送消息处理器
+            this.registerPushHandlers();
+        } catch (error) {
+            console.error('WebSocket连接失败:', error);
+            // WebSocket连接失败时，回退到轮询
+            this.startDownloadMonitoring();
+        }
+    }
+
+    /**
+     * 注册WebSocket推送消息处理器
+     */
+    registerPushHandlers() {
+        // 下载状态更新推送
+        this.wsClient.onPush('download:update', (tasks) => {
+            if (this.currentPage === 'downloads') {
+                this.renderDownloadList(tasks);
+            }
+            this.updateDownloadBadgeFromTasks(tasks);
+        });
+
+        // 下载完成推送
+        this.wsClient.onPush('download:complete', (task) => {
+            this.notifications.success(`下载完成: ${task.title}`);
+            if (this.currentPage === 'downloads') {
+                this.loadDownloads();
+            }
+        });
+
+        // 下载错误推送
+        this.wsClient.onPush('download:error', ({ taskId, error }) => {
+            console.error(`下载错误 ${taskId}:`, error);
+            if (this.currentPage === 'downloads') {
+                this.loadDownloads();
+            }
+        });
+
+        // 源切换推送
+        this.wsClient.onPush('source:change', ({ sourceId, sourceName }) => {
+            console.log(`源切换: ${sourceId} - ${sourceName}`);
+            if (this.currentSource?.id !== sourceId) {
+                this.loadActiveSource().then(() => {
+                    this.reloadCurrentPage();
+                });
+            }
+        });
+    }
+
+    /**
+     * 从任务列表更新下载徽章
+     * @param {DownloadTask[]} tasks
+     */
+    updateDownloadBadgeFromTasks(tasks) {
+        const activeDownloads = tasks.filter(d =>
+            d.status === 'downloading' || d.status === 'created'
+        ).length;
+
+        const badge = DOMHelper.$('#downloadBadge');
+        if (badge) {
+            badge.textContent = activeDownloads;
+            badge.style.display = activeDownloads > 0 ? 'block' : 'none';
         }
     }
     
@@ -943,25 +1023,25 @@ class VideoManager {
     async performSearch() {
         const searchInput = DOMHelper.$('#searchInput');
         if (!searchInput) return;
-        
+
         const query = searchInput.value.trim();
-        
+
         if (!query) {
             this.notifications.warning('请输入搜索关键词');
             return;
         }
-        
+
         if (!this.currentSource) {
             this.notifications.warning('请先选择视频源');
             return;
         }
-        
+
         this.searchQuery = query;
         // 新搜索清除缓存
         this.clearPageCache('search');
-        this.switchPage('search');
         this.saveToHash(); // 保存搜索状态到哈希
-        await this.loadSearchResults();
+        this.switchPage('search');
+        // switchPage中的loadPageData会自动调用loadSearchResults，不需要重复调用
     }
     
     /**

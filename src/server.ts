@@ -1,8 +1,9 @@
-import { Application, Router, send } from 'oak';
-import { VideoSourceManager } from './manager.ts';
-import { DownloadManager } from './utils/download.ts';
-import { M3U8Parser, M3U8Service } from './utils/m3u8.ts';
-import { enableVerboseLogs, logInfo, logError, logDebug, logWarn } from './utils/logger.ts';
+import { Hono } from "hono";
+import { serveStatic } from "hono/deno";
+import { VideoSourceManager } from "./manager.ts";
+import { DownloadManager } from "./utils/download.ts";
+import { M3U8Parser, M3U8Service } from "./utils/m3u8.ts";
+import { enableVerboseLogs, logInfo, logError, logDebug, logWarn } from "./utils/logger.ts";
 import { fetch2 } from "./utils/fetch.ts";
 import {
     validateRequiredString,
@@ -11,10 +12,8 @@ import {
     validatePagination
 } from "./utils/validation.ts";
 import { getConfig, createDefaultConfig } from "./config/index.ts";
-
-// 创建应用实例
-const app = new Application();
-const router = new Router();
+import { rpcServer } from "./websocket/rpc.ts";
+import { pushDownloadUpdate, pushSourceChange } from "./websocket/push.ts";
 
 // 初始化配置（自动创建默认配置文件）
 await createDefaultConfig();
@@ -27,104 +26,81 @@ const downloadManager = new DownloadManager();
 // 检查是否启用verbose日志
 if (config.server.verboseLogging) {
     enableVerboseLogs();
-    logInfo('Verbose logging enabled');
+    logInfo("Verbose logging enabled");
 }
 
-// 数据持久化使用 Deno KV，无需文件路径
+// 创建 Hono 应用
+const app = new Hono();
 
-// 中间件：设置CORS和错误处理
-app.use(async (ctx, next) => {
-    // 设置CORS头
-    ctx.response.headers.set('Access-Control-Allow-Origin', '*');
-    ctx.response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    ctx.response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-
-    try {
-        await next();
-    } catch (error) {
-        logError('服务器错误:', error);
-        ctx.response.status = 500;
-        ctx.response.body = { error: '服务器内部错误' };
-    }
+// CORS 中间件
+app.use("*", async (c, next) => {
+    c.header("Access-Control-Allow-Origin", "*");
+    c.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    c.header("Access-Control-Allow-Headers", "Content-Type, Authorization, Range");
+    c.header("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges");
+    await next();
 });
 
-// 中间件：日志记录
-app.use(async (ctx, next) => {
-    const taskId = ctx.request.url.searchParams.get('taskId');
+// 日志中间件
+app.use("*", async (c, next) => {
     const start = Date.now();
     await next();
     const ms = Date.now() - start;
-    if (!taskId) {
-        console.info(`${ctx.request.method} ${new URL(ctx.request.url).href} - ${ctx.response.status} - ${ms}ms`);
-    }
+    logDebug(`${c.req.method} ${c.req.url} - ${c.res.status} - ${ms}ms`);
 });
 
-// 静态文件服务
-app.use(async (ctx, next) => {
-    if (ctx.request.url.pathname.startsWith('/static/')) {
-        await send(ctx, ctx.request.url.pathname.slice(1), {
-            root: `${Deno.cwd()}/public`
-        });
-    } else {
-        await next();
-    }
-});
+// 静态文件服务 - /static/* 路径
+app.use("/static/*", serveStatic({ root: "./public" }));
 
-// API路由
+// ==================== HTTP API 路由 ====================
 
 // 获取所有视频源
-router.get('/api/sources', (ctx) => {
-    logDebug('获取所有视频源');
-    ctx.response.body = videoSourceManager.getAllSources();
+app.get("/api/sources", (c) => {
+    logDebug("获取所有视频源");
+    return c.json(videoSourceManager.getAllSources());
 });
 
 // 获取视频源健康状态
-router.get('/api/sources/health', (ctx) => {
-    logDebug('获取视频源健康状态');
-    ctx.response.body = {
+app.get("/api/sources/health", (c) => {
+    logDebug("获取视频源健康状态");
+    return c.json({
         health: videoSourceManager.getHealthStatus(),
         initialized: videoSourceManager.isInitialized(),
         activeSourceId: videoSourceManager.getActiveSourceId()
-    };
+    });
 });
 
 // 重新初始化指定视频源
-router.post('/api/sources/:id/reinit', async (ctx) => {
+app.post("/api/sources/:id/reinit", async (c) => {
     try {
-        const sourceId = ctx.params.id;
+        const sourceId = c.req.param("id");
 
-        if (!validateRequiredString(sourceId, 'sourceId')) {
-            ctx.response.status = 400;
-            ctx.response.body = { error: '缺少或无效的视频源ID' };
-            return;
+        if (!validateRequiredString(sourceId, "sourceId")) {
+            return c.json({ error: "缺少或无效的视频源ID" }, 400);
         }
 
         logInfo(`重新初始化视频源: ${sourceId}`);
         const success = await videoSourceManager.initSource(sourceId);
 
-        ctx.response.body = {
+        return c.json({
             success,
             health: videoSourceManager.getHealthStatus()[sourceId]
-        };
+        });
     } catch (error) {
-        logError('重新初始化视频源失败:', error);
-        ctx.response.status = 500;
-        ctx.response.body = { error: '重新初始化失败' };
+        logError("重新初始化视频源失败:", error);
+        return c.json({ error: "重新初始化失败" }, 500);
     }
 });
 
 // 设置活动视频源
-router.post('/api/sources/active', async (ctx) => {
+app.post("/api/sources/active", async (c) => {
     try {
-        const body = await ctx.request.body.json();
+        const body = await c.req.json();
         const { id: sourceId } = body;
 
-        // 参数校验
-        if (!validateRequiredString(sourceId, 'source')) {
-            logWarn('设置活动视频源失败: 缺少或无效的source参数');
-            ctx.response.status = 400;
-            ctx.response.body = { error: '缺少或无效的source参数' };
-            return;
+        if (!validateRequiredString(sourceId, "source")) {
+            logWarn("设置活动视频源失败: 缺少或无效的source参数");
+            return c.json({ error: "缺少或无效的source参数" }, 400);
         }
 
         logDebug(`设置活动视频源: ${sourceId}`);
@@ -132,225 +108,193 @@ router.post('/api/sources/active', async (ctx) => {
         const success = videoSourceManager.setActiveSource(sourceId);
         if (success) {
             logInfo(`成功设置活动视频源: ${sourceId}`);
+            const newSource = videoSourceManager.getActiveSource();
+            if (newSource) {
+                pushSourceChange(newSource.getId(), newSource.getName());
+            }
         } else {
             logWarn(`设置活动视频源失败: ${sourceId}`);
         }
-        ctx.response.body = { success };
+        return c.json({ success });
     } catch (error) {
-        logError('设置活动视频源请求处理失败:', error);
-        ctx.response.status = 500;
-        ctx.response.body = { error: '请求处理失败' };
+        logError("设置活动视频源请求处理失败:", error);
+        return c.json({ error: "请求处理失败" }, 500);
     }
 });
 
 // 获取当前活动视频源
-router.get('/api/sources/active', (ctx) => {
-    logDebug('获取当前活动视频源');
+app.get("/api/sources/active", (c) => {
+    logDebug("获取当前活动视频源");
     const activeSource = videoSourceManager.getActiveSource();
     const sourceId = videoSourceManager.getActiveSourceId();
-    ctx.response.body = {
+    return c.json({
         id: sourceId,
         name: activeSource?.getName() || null
-    };
+    });
 });
 
 // 获取主页视频
-router.get('/api/home-videos', async (ctx) => {
+app.get("/api/home-videos", async (c) => {
     try {
         const activeSource = videoSourceManager.getActiveSource();
-        const pageParam = ctx.request.url.searchParams.get('page') || '1';
+        const pageParam = c.req.query("page") || "1";
 
-        // 参数校验
         if (!validatePagination(pageParam)) {
-            logWarn('获取主页视频失败: 无效的分页参数');
-            ctx.response.status = 400;
-            ctx.response.body = { error: '无效的分页参数' };
-            return;
+            logWarn("获取主页视频失败: 无效的分页参数");
+            return c.json({ error: "无效的分页参数" }, 400);
         }
 
         const page = parseInt(pageParam);
         logDebug(`获取主页视频, page: ${page}`);
 
         if (!activeSource) {
-            logWarn('没有活动的视频源');
-            ctx.response.status = 400;
-            ctx.response.body = { error: '没有活动的视频源' };
-            return;
+            logWarn("没有活动的视频源");
+            return c.json({ error: "没有活动的视频源" }, 400);
         }
 
         const result = await activeSource.getHomeVideos(page);
         logInfo(`获取到 ${result.videos.length} 个主页视频, 当前页: ${result.currentPage}, 总页数: ${result.totalPages}`);
-        ctx.response.body = result;
+        return c.json(result);
     } catch (error) {
-        logError('获取主页视频失败:', error);
-        ctx.response.status = 500;
-        ctx.response.body = { error: '获取主页视频失败' };
+        logError("获取主页视频失败:", error);
+        return c.json({ error: "获取主页视频失败" }, 500);
     }
 });
 
 // 搜索视频
-router.get('/api/search', async (ctx) => {
+app.get("/api/search", async (c) => {
     try {
         const activeSource = videoSourceManager.getActiveSource();
-        const query = ctx.request.url.searchParams.get('q') || '';
-        const pageParam = ctx.request.url.searchParams.get('page') || '1';
+        const query = c.req.query("q") || "";
+        const pageParam = c.req.query("page") || "1";
 
-        // 参数校验
-        if (!validateRequiredString(query, 'query')) {
-            logWarn('搜索视频失败: 缺少或无效的搜索查询');
-            ctx.response.status = 400;
-            ctx.response.body = { error: '缺少或无效的搜索查询' };
-            return;
+        if (!validateRequiredString(query, "query")) {
+            logWarn("搜索视频失败: 缺少或无效的搜索查询");
+            return c.json({ error: "缺少或无效的搜索查询" }, 400);
         }
 
         if (!validatePagination(pageParam)) {
-            logWarn('搜索视频失败: 无效的分页参数');
-            ctx.response.status = 400;
-            ctx.response.body = { error: '无效的分页参数' };
-            return;
+            logWarn("搜索视频失败: 无效的分页参数");
+            return c.json({ error: "无效的分页参数" }, 400);
         }
 
         const page = parseInt(pageParam);
         logDebug(`搜索视频: ${query}, page: ${page}`);
 
         if (!activeSource) {
-            logWarn('没有活动的视频源');
-            ctx.response.status = 400;
-            ctx.response.body = { error: '没有活动的视频源' };
-            return;
+            logWarn("没有活动的视频源");
+            return c.json({ error: "没有活动的视频源" }, 400);
         }
 
         const results = await activeSource.searchVideos(query, page);
         logInfo(`搜索到 ${results.videos.length} 个视频`);
-        ctx.response.body = results;
+        return c.json(results);
     } catch (error) {
-        logError('搜索视频失败:', error);
-        ctx.response.status = 500;
-        ctx.response.body = { error: '搜索视频失败' };
+        logError("搜索视频失败:", error);
+        return c.json({ error: "搜索视频失败" }, 500);
     }
 });
 
-// ==================== 系列 API（简洁版） ====================
+// ==================== 系列 API ====================
 
-// 获取系列详情（支持通过ID或URL获取）
-router.get('/api/series/:id', async (ctx) => {
+// 获取系列详情（基本信息，不包含完整剧集列表）
+app.get("/api/series/:id", async (c) => {
     try {
-        const seriesId = ctx.params.id;
-        const url = ctx.request.url.searchParams.get('url');
+        const seriesId = c.req.param("id");
+        const url = c.req.query("url");
 
         if (!seriesId && !url) {
-            ctx.response.status = 400;
-            ctx.response.body = { error: '缺少系列ID或URL' };
-            return;
+            return c.json({ error: "缺少系列ID或URL" }, 400);
         }
 
-        logDebug(`获取系列详情: id=${seriesId}, url=${url}`);
+        logDebug(`获取系列详情: ${seriesId}`);
 
-        const detail = await videoSourceManager.getSeries(seriesId, url ?? undefined);
+        const detail = await videoSourceManager.getSeries(seriesId, url || undefined);
         if (!detail) {
-            ctx.response.status = 404;
-            ctx.response.body = { error: '系列不存在' };
-            return;
+            return c.json({ error: "系列不存在" }, 404);
         }
 
-        ctx.response.body = detail;
+        return c.json(detail);
     } catch (error) {
-        logError('获取系列详情失败:', error);
-        ctx.response.status = 500;
-        ctx.response.body = { error: '获取系列详情失败' };
+        logError("获取系列详情失败:", error);
+        return c.json({ error: "获取系列详情失败" }, 500);
     }
 });
 
 // 获取无限系列视频列表（用于无限播放模式）
-router.get('/api/series/:id/videos', async (ctx) => {
+app.get("/api/series/:id/videos", async (c) => {
     try {
-        const seriesId = ctx.params.id;
+        const seriesId = c.req.param("id");
 
         if (!seriesId) {
-            ctx.response.status = 400;
-            ctx.response.body = { error: '缺少系列ID' };
-            return;
+            return c.json({ error: "缺少系列ID" }, 400);
         }
 
         logDebug(`获取无限系列视频: ${seriesId}`);
 
-        // 调用源的 getSeries 方法获取视频列表
         const result = await videoSourceManager.getSeriesVideos(seriesId);
         if (!result) {
-            ctx.response.status = 404;
-            ctx.response.body = { error: '系列不存在' };
-            return;
+            return c.json({ error: "系列不存在" }, 404);
         }
 
-        ctx.response.body = result;
+        return c.json(result);
     } catch (error) {
-        logError('获取无限系列视频失败:', error);
-        ctx.response.status = 500;
-        ctx.response.body = { error: '获取无限系列视频失败' };
+        logError("获取无限系列视频失败:", error);
+        return c.json({ error: "获取无限系列视频失败" }, 500);
     }
 });
 
 // 解析视频链接
-router.post('/api/parse-video', async (ctx) => {
+app.post("/api/parse-video", async (c) => {
     try {
         const activeSource = videoSourceManager.getActiveSource();
-        const body = await ctx.request.body.json();
+        const body = await c.req.json();
         const { url } = body;
 
-        // 参数校验
         if (!validateUrl(url)) {
-            logWarn('解析视频链接失败: 缺少或无效的URL参数');
-            ctx.response.status = 400;
-            ctx.response.body = { error: '缺少或无效的URL参数' };
-            return;
+            logWarn("解析视频链接失败: 缺少或无效的URL参数");
+            return c.json({ error: "缺少或无效的URL参数" }, 400);
         }
 
         logDebug(`解析视频链接: ${url}`);
 
         if (!activeSource) {
-            logWarn('没有活动的视频源');
-            ctx.response.status = 400;
-            ctx.response.body = { error: '没有活动的视频源' };
-            return;
+            logWarn("没有活动的视频源");
+            return c.json({ error: "没有活动的视频源" }, 400);
         }
 
         const m3u8Results = await activeSource.parseVideoUrl(url);
         logInfo(`解析视频链接成功，获取到 ${m3u8Results.length} 个结果`);
-        ctx.response.body = { results: m3u8Results };
+        return c.json({ results: m3u8Results });
     } catch (error) {
-        logError('解析视频链接失败:', error);
-        ctx.response.status = 500;
-        ctx.response.body = { error: '解析视频链接失败' };
+        logError("解析视频链接失败:", error);
+        return c.json({ error: "解析视频链接失败" }, 500);
     }
 });
 
 // 解析M3U8
-router.get('/api/parse-m3u8', async (ctx) => {
+app.get("/api/parse-m3u8", async (c) => {
     try {
-        const url = ctx.request.url.searchParams.get('url')!;
+        const url = c.req.query("url");
 
-        // 参数校验
-        if (!validateUrl(url)) {
-            logWarn('解析M3U8失败: 缺少或无效的URL参数');
-            ctx.response.status = 400;
-            ctx.response.body = { error: '缺少或无效的URL参数' };
-            return;
+        if (!url || !validateUrl(url)) {
+            logWarn("解析M3U8失败: 缺少或无效的URL参数");
+            return c.json({ error: "缺少或无效的URL参数" }, 400);
         }
 
         logDebug(`解析M3U8: ${url}`);
 
-        const results = await M3U8Service.fetchAndParseM3U8(url!);
+        const results = await M3U8Service.fetchAndParseM3U8(url);
         logInfo(`成功解析M3U8，获取到 ${results.length} 个结果`);
-        ctx.response.body = { results };
+        return c.json({ results });
     } catch (error) {
-        logError('解析M3U8失败:', error);
-        ctx.response.status = 500;
-        ctx.response.body = { error: '解析M3U8失败' };
+        logError("解析M3U8失败:", error);
+        return c.json({ error: "解析M3U8失败" }, 500);
     }
 });
 
 interface ProxyResponse {
-    data: Uint8Array | ReadableStream<Uint8Array<ArrayBuffer>>;
+    data: Uint8Array | ReadableStream<Uint8Array>;
     contentType: string;
     status: number;
     headers: Record<string, string>;
@@ -365,63 +309,46 @@ async function handleProxyRequest(
 ): Promise<ProxyResponse> {
     try {
         const originalUrl = decodeURIComponent(encodedUrl);
-        // if (!task_id)
-        //     logInfo(`Proxy request: ${originalUrl}, referer: ${referer || 'none'}, range: ${range || 'none'}`);
 
-        // 准备请求头
         const requestHeaders: Record<string, string> = {
-            'Accept': '*/*'
+            "Referer": referer || "",
+            "Origin": referer ? new URL(referer).origin : "",
         };
 
-        // 转发 Range 请求头（用于 seek）
         if (range) {
-            requestHeaders['Range'] = range;
+            requestHeaders["Range"] = range;
         }
 
-        // 添加referer
-        if (referer) {
-            requestHeaders['Referer'] = referer;
-            requestHeaders['Origin'] = referer ? new URL(referer).origin : '';
-        }
-
-        // 获取原始内容（使用更长的超时时间，适合大文件下载）
         const response = await fetch2(originalUrl, {
             headers: requestHeaders,
-            timeout: 300000, // 5分钟超时，适合大文件
+            timeout: 300000,
         });
 
-        // 处理 206 Partial Content（Range 请求成功）
         if (!response.ok && response.status !== 206) {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
 
-        const contentType = response.headers.get('content-type') || 'application/octet-stream';
-
-        // 收集需要透传的响应头
+        const contentType = response.headers.get("content-type") || "application/octet-stream";
         const responseHeaders: Record<string, string> = {};
 
-        // 透传 Content-Range（Range 请求的响应范围）
-        const contentRange = response.headers.get('content-range');
+        const contentRange = response.headers.get("content-range");
         if (contentRange) {
-            responseHeaders['Content-Range'] = contentRange;
+            responseHeaders["Content-Range"] = contentRange;
         }
 
-        // 透传 Content-Length
-        const contentLength = response.headers.get('content-length');
+        const contentLength = response.headers.get("content-length");
         if (contentLength) {
-            responseHeaders['Content-Length'] = contentLength;
+            responseHeaders["Content-Length"] = contentLength;
         }
 
-        // 对于视频文件，声明支持 Range 请求
-        if (contentType.startsWith('video/') || contentType.startsWith('audio/')) {
-            responseHeaders['Accept-Ranges'] = 'bytes';
+        if (contentType.startsWith("video/") || contentType.startsWith("audio/")) {
+            responseHeaders["Accept-Ranges"] = "bytes";
         }
 
-        // 处理M3U8：重写所有URL
-        if (originalUrl.includes('.m3u8') || contentType.includes('application/vnd.apple.mpegurl') || body_type == 'm3u8') {
+        if (originalUrl.includes(".m3u8") || contentType.includes("application/vnd.apple.mpegurl") || body_type == "m3u8") {
             const parser = new M3U8Parser(originalUrl);
             const text = await response.text();
-            const manifest = M3U8Parser.identifyPlaylistType(text) === 'master'
+            const manifest = M3U8Parser.identifyPlaylistType(text) === "master"
                 ? parser.parseMasterPlaylist(text)
                 : parser.parseMediaPlaylist(text);
 
@@ -430,49 +357,44 @@ async function handleProxyRequest(
                 referer
             });
 
-            // mark
             if (task_id) {
                 downloadManager.markStart(task_id, manifest.segments.length);
             }
 
             return {
                 data: new TextEncoder().encode(rewritten),
-                contentType: 'application/vnd.apple.mpegurl',
+                contentType: "application/vnd.apple.mpegurl",
                 status: 200,
                 headers: {},
             };
         }
 
-        if (body_type == 'ts') {
+        if (body_type == "ts") {
             const data = new Uint8Array(await response.arrayBuffer());
             const fixed = M3U8Service.fixTSStream(data);
 
-            // mark
             if (task_id) {
-                const task = downloadManager.markStep(task_id);
-                // logInfo(`下载: ${task?.fileName}, 已下载 ${task?.progress?.toFixed(2)} %`);
+                downloadManager.markStep(task_id);
             }
 
             return {
                 data: fixed,
-                contentType: 'video/mp2t',
+                contentType: "video/mp2t",
                 status: response.status,
-                // 不透传 Content-Length，因为 fixTSStream 可能修改数据大小
                 headers: (() => {
-                    const { 'Content-Length': _, ...rest } = responseHeaders;
+                    const { "Content-Length": _, ...rest } = responseHeaders;
                     return rest;
                 })(),
             };
         }
 
-        // 回退到正常（直接视频文件下载）
         if (!response.body)
-            throw new Error('The response from upstream has no body');
+            throw new Error("The response from upstream has no body");
         let targetStream = response.body;
-        const contentLen = parseInt(response.headers.get('content-length') || '0');
+        const contentLen = parseInt(response.headers.get("content-length") || "0");
         if (task_id && contentLen) {
             let written = 0;
-            const transform = new TransformStream<Uint8Array<ArrayBuffer>>({
+            const transform = new TransformStream<Uint8Array>({
                 transform(chunk, ctrl) {
                     ctrl.enqueue(chunk);
                     written += chunk.byteLength;
@@ -488,147 +410,124 @@ async function handleProxyRequest(
             status: response.status,
             headers: responseHeaders,
             data: targetStream
-        }
+        };
     } catch (error) {
         logError(`Proxy request failed: ${encodedUrl}`, error);
         throw error;
     }
 }
 
-// M3U8/视频代理 - 支持 Range 请求（seek）
-// OPTIONS 预检请求处理
-router.options('/api/proxy/:name', (ctx) => {
-    ctx.response.status = 204;
-    ctx.response.headers.set('Access-Control-Allow-Origin', '*');
-    ctx.response.headers.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-    ctx.response.headers.set('Access-Control-Allow-Headers', 'Range, Content-Type, Authorization');
-    ctx.response.headers.set('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
-    ctx.response.headers.set('Access-Control-Max-Age', '86400');
+// M3U8/视频代理 - OPTIONS 预检请求处理
+app.options("/api/proxy/:name", (c) => {
+    c.header("Access-Control-Allow-Origin", "*");
+    c.header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+    c.header("Access-Control-Allow-Headers", "Range, Content-Type, Authorization");
+    c.header("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges");
+    c.header("Access-Control-Max-Age", "86400");
+    return c.body(null, 204);
 });
 
-router.get('/api/proxy/:name', async (ctx) => {
+app.get("/api/proxy/:name", async (c) => {
     try {
-        const encodedUrl = ctx.request.url.searchParams.get('url');
+        const encodedUrl = c.req.query("url");
 
-        // 参数校验
-        if (!validateRequiredString(encodedUrl, 'url')) {
-            logWarn('代理请求失败: 缺少URL参数');
-            ctx.response.status = 400;
-            ctx.response.body = { error: '缺少URL参数' };
-            return;
+        if (!validateRequiredString(encodedUrl, "url")) {
+            logWarn("代理请求失败: 缺少URL参数");
+            return c.json({ error: "缺少URL参数" }, 400);
         }
 
-        // 获取 Range 请求头（用于视频 seek）
-        const rangeHeader = ctx.request.headers.get('range');
+        const rangeHeader = c.req.header("range");
+        logDebug(`处理代理请求: ${encodedUrl}, Range: ${rangeHeader || "none"}`);
 
-        logDebug(`处理代理请求: ${encodedUrl}, Range: ${rangeHeader || 'none'}`);
-
-        const trace_id = ctx.request.url.searchParams.get('taskId');
-        const referer = ctx.request.url.searchParams.get('referer');
+        const trace_id = c.req.query("taskId");
+        const referer = c.req.query("referer");
 
         const { data, contentType, status, headers } = await handleProxyRequest(
             encodedUrl!,
             referer ?? undefined,
             trace_id ?? undefined,
             rangeHeader ?? undefined,
-            ctx.request.url.searchParams.get('type') ?? undefined
+            c.req.query("type") ?? undefined
         );
 
         logDebug(`代理请求成功，内容类型: ${contentType}, 状态: ${status}`);
 
-        // 设置响应状态（支持 206 Partial Content）
-        ctx.response.status = status;
-        ctx.response.body = data;
-        ctx.response.type = contentType;
+        c.header("Access-Control-Allow-Origin", "*");
+        c.header("Access-Control-Allow-Headers", "Range, Content-Type");
+        c.header("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges");
 
-        // 设置 CORS 头
-        ctx.response.headers.set('Access-Control-Allow-Origin', '*');
-        ctx.response.headers.set('Access-Control-Allow-Headers', 'Range, Content-Type');
-        ctx.response.headers.set('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
-
-        // 透传响应头（Content-Range, Content-Length, Accept-Ranges）
         for (const [key, value] of Object.entries(headers)) {
-            ctx.response.headers.set(key, value);
+            c.header(key, value);
         }
 
-        // 对于视频文件，添加 Accept-Ranges 头
-        if (contentType.startsWith('video/') || contentType.startsWith('audio/')) {
-            ctx.response.headers.set('Accept-Ranges', 'bytes');
+        if (contentType.startsWith("video/") || contentType.startsWith("audio/")) {
+            c.header("Accept-Ranges", "bytes");
         }
 
-        // 设置下载文件名（仅针对 M3U8）
-        if (ctx.params.name && (contentType.includes('mpegurl') || encodedUrl!.includes('.m3u8'))) {
-            ctx.response.headers.set('Content-Disposition', `attachment; filename="${ctx.params.name}.m3u8"`);
+        if (c.req.param("name") && (contentType.includes("mpegurl") || encodedUrl!.includes(".m3u8"))) {
+            c.header("Content-Disposition", `attachment; filename="${c.req.param("name")}.m3u8"`);
         }
+
+        c.status(status as 200 | 206);
+        return c.body(data as Uint8Array<ArrayBuffer>);
     } catch (error) {
-        logError('处理代理请求失败:', error);
-        ctx.response.status = 500;
-        ctx.response.body = { error: error instanceof Error ? error.message : '处理代理请求失败' };
+        logError("处理代理请求失败:", error);
+        return c.json({ error: "处理代理请求失败" }, 500);
     }
 });
 
 // 图片代理
-router.get('/api/image-proxy', async (ctx) => {
+app.get("/api/image-proxy", async (c) => {
     try {
-        const imageUrl = ctx.request.url.searchParams.get('url')!;
-        const sourceId = ctx.request.url.searchParams.get('source')!;
+        const imageUrl = c.req.query("url");
+        const sourceId = c.req.query("source");
 
-        // 参数校验
-        if (!validateUrl(imageUrl)) {
-            logWarn('图片代理失败: 缺少或无效的图片URL');
-            ctx.response.status = 400;
-            ctx.response.body = { error: '缺少或无效的图片URL' };
-            return;
+        if (!imageUrl || !validateUrl(imageUrl)) {
+            logWarn("图片代理失败: 缺少或无效的图片URL");
+            return c.json({ error: "缺少或无效的图片URL" }, 400);
         }
 
         logDebug(`图片代理请求: ${imageUrl}, sourceId: ${sourceId}`);
 
-        // 如果有源ID，使用该源的getImage方法获取图片
         if (sourceId) {
             const source = videoSourceManager.getSource(sourceId);
             if (source) {
                 logDebug(`使用源 ${sourceId} 获取图片`);
                 const imageData = await source.getImage(imageUrl);
-                ctx.response.body = imageData.data;
-                ctx.response.type = imageData.contentType;
-                return;
+                c.header("Content-Type", imageData.contentType);
+                return c.body(imageData.data as Uint8Array<ArrayBuffer>);
             }
         }
 
-        // 如果没有指定源或源不存在，使用默认方式获取图片
-        logDebug('使用默认方式获取图片');
+        logDebug("使用默认方式获取图片");
         const proxiedImage = await fetch2(imageUrl);
         const imageBuffer = new Uint8Array(await proxiedImage.arrayBuffer());
-        ctx.response.body = imageBuffer;
-        ctx.response.type = proxiedImage.headers.get('content-type') || 'image/jpeg';
-        ctx.response.headers.set('Access-Control-Allow-Origin', '*');
+        c.header("Content-Type", proxiedImage.headers.get("content-type") || "image/jpeg");
+        c.header("Access-Control-Allow-Origin", "*");
+        return c.body(imageBuffer);
     } catch (error) {
-        logError('图片代理失败:', error);
-        ctx.response.status = 500;
-        ctx.response.body = { error: '图片代理失败' };
+        logError("图片代理失败:", error);
+        return c.json({ error: "图片代理失败" }, 500);
     }
 });
 
+// ==================== 下载 API ====================
+
 // 创建下载任务
-router.post('/api/downloads', async (ctx) => {
+app.post("/api/downloads", async (c) => {
     try {
-        const body = await ctx.request.body.json();
+        const body = await c.req.json();
         const { url, title, outputPath, quality, referer } = body;
 
-        // 参数校验
-        const missingFields = validateRequiredFields(body, ['url', 'title']);
+        const missingFields = validateRequiredFields(body, ["url", "title"]);
         if (missingFields.length > 0) {
-            logWarn(`创建下载任务失败: 缺少必需参数: ${missingFields.join(', ')}`);
-            ctx.response.status = 400;
-            ctx.response.body = { error: `缺少必需参数: ${missingFields.join(', ')}` };
-            return;
+            logWarn(`创建下载任务失败: 缺少必需参数: ${missingFields.join(", ")}`);
+            return c.json({ error: `缺少必需参数: ${missingFields.join(", ")}` }, 400);
         }
 
         if (!validateUrl(url)) {
-            logWarn('创建下载任务失败: 无效的URL参数');
-            ctx.response.status = 400;
-            ctx.response.body = { error: '无效的URL参数' };
-            return;
+            logWarn("创建下载任务失败: 无效的URL参数");
+            return c.json({ error: "无效的URL参数" }, 400);
         }
 
         logDebug(`创建下载任务: ${title}, url: ${url}, quality: ${quality}`);
@@ -636,75 +535,60 @@ router.post('/api/downloads', async (ctx) => {
         const taskId = downloadManager.createDownloadTask(url, title, outputPath, referer);
         const task = downloadManager.getDownloadTask(taskId);
         logInfo(`成功创建下载任务: ${taskId}`);
-        ctx.response.body = { task };
+        return c.json({ task });
     } catch (error) {
-        logError('创建下载任务失败:', error);
-        ctx.response.status = 500;
-        ctx.response.body = { error: '创建下载任务失败' };
+        logError("创建下载任务失败:", error);
+        return c.json({ error: "创建下载任务失败" }, 500);
     }
 });
 
 // 开始下载
-router.post('/api/downloads/:id/start', async (ctx) => {
+app.post("/api/downloads/:id/start", async (c) => {
     try {
-        const taskId = ctx.params.id;
+        const taskId = c.req.param("id");
 
-        // 参数校验
-        if (!validateRequiredString(taskId, 'taskId')) {
-            logWarn('开始下载失败: 缺少或无效的任务ID');
-            ctx.response.status = 400;
-            ctx.response.body = { error: '缺少或无效的任务ID' };
-            return;
+        if (!validateRequiredString(taskId, "taskId")) {
+            logWarn("开始下载失败: 缺少或无效的任务ID");
+            return c.json({ error: "缺少或无效的任务ID" }, 400);
         }
 
         logDebug(`开始下载任务: ${taskId}`);
 
-        // 检查任务是否存在
         const task = downloadManager.getDownloadTask(taskId);
         if (!task) {
-            ctx.response.status = 404;
-            ctx.response.body = { error: '下载任务不存在' };
-            return;
+            return c.json({ error: "下载任务不存在" }, 404);
         }
 
-        // 检查任务状态
-        if (task.status === 'downloading') {
-            ctx.response.body = { success: true, message: '任务已在下载中' };
-            return;
+        if (task.status === "downloading") {
+            return c.json({ success: true, message: "任务已在下载中" });
         }
 
-        if (task.status === 'completed') {
-            ctx.response.body = { success: true, message: '任务已下载完成' };
-            return;
+        if (task.status === "completed") {
+            return c.json({ success: true, message: "任务已下载完成" });
         }
 
-        // 开始下载（非阻塞，立即返回）
         const success = downloadManager.startDownload(taskId);
 
         logInfo(`下载任务 ${taskId} 已加入队列`);
-        ctx.response.body = {
+        return c.json({
             success: true,
-            message: '任务已加入下载队列',
+            message: "任务已加入下载队列",
             task: downloadManager.getDownloadTask(taskId)
-        };
+        });
     } catch (error) {
-        logError('开始下载失败:', error);
-        ctx.response.status = 500;
-        ctx.response.body = { error: '开始下载失败' };
+        logError("开始下载失败:", error);
+        return c.json({ error: "开始下载失败" }, 500);
     }
 });
 
 // 获取下载任务状态
-router.get('/api/downloads/:id', (ctx) => {
+app.get("/api/downloads/:id", (c) => {
     try {
-        const taskId = ctx.params.id;
+        const taskId = c.req.param("id");
 
-        // 参数校验
-        if (!validateRequiredString(taskId, 'taskId')) {
-            logWarn('获取下载任务状态失败: 缺少或无效的任务ID');
-            ctx.response.status = 400;
-            ctx.response.body = { error: '缺少或无效的任务ID' };
-            return;
+        if (!validateRequiredString(taskId, "taskId")) {
+            logWarn("获取下载任务状态失败: 缺少或无效的任务ID");
+            return c.json({ error: "缺少或无效的任务ID" }, 400);
         }
 
         logDebug(`获取下载任务状态: ${taskId}`);
@@ -712,37 +596,31 @@ router.get('/api/downloads/:id', (ctx) => {
 
         if (!task) {
             logWarn(`下载任务不存在: ${taskId}`);
-            ctx.response.status = 404;
-            ctx.response.body = { error: '下载任务不存在' };
-            return;
+            return c.json({ error: "下载任务不存在" }, 404);
         }
 
-        ctx.response.body = { task };
+        return c.json({ task });
     } catch (error) {
-        logError('获取下载任务状态失败:', error);
-        ctx.response.status = 500;
-        ctx.response.body = { error: '获取下载任务状态失败' };
+        logError("获取下载任务状态失败:", error);
+        return c.json({ error: "获取下载任务状态失败" }, 500);
     }
 });
 
 // 获取所有下载任务
-router.get('/api/downloads', (ctx) => {
-    logDebug('获取所有下载任务');
+app.get("/api/downloads", (c) => {
+    logDebug("获取所有下载任务");
     const tasks = downloadManager.getAllDownloadTasks();
-    ctx.response.body = { tasks };
+    return c.json({ tasks });
 });
 
 // 取消下载
-router.post('/api/downloads/:id/cancel', async (ctx) => {
+app.post("/api/downloads/:id/cancel", async (c) => {
     try {
-        const taskId = ctx.params.id;
+        const taskId = c.req.param("id");
 
-        // 参数校验
-        if (!validateRequiredString(taskId, 'taskId')) {
-            logWarn('取消下载失败: 缺少或无效的任务ID');
-            ctx.response.status = 400;
-            ctx.response.body = { error: '缺少或无效的任务ID' };
-            return;
+        if (!validateRequiredString(taskId, "taskId")) {
+            logWarn("取消下载失败: 缺少或无效的任务ID");
+            return c.json({ error: "缺少或无效的任务ID" }, 400);
         }
 
         logDebug(`取消下载任务: ${taskId}`);
@@ -750,58 +628,49 @@ router.post('/api/downloads/:id/cancel', async (ctx) => {
         const success = downloadManager.cancelDownload(taskId);
         if (success) {
             logInfo(`下载任务 ${taskId} 已取消`);
-            // 保存状态
             await downloadManager.saveToKV();
         } else {
             logWarn(`取消下载任务 ${taskId} 失败`);
         }
-        ctx.response.body = { success };
+        return c.json({ success });
     } catch (error) {
-        logError('取消下载失败:', error);
-        ctx.response.status = 500;
-        ctx.response.body = { error: '取消下载失败' };
+        logError("取消下载失败:", error);
+        return c.json({ error: "取消下载失败" }, 500);
     }
 });
 
 // 重试下载
-router.post('/api/downloads/:id/retry', async (ctx) => {
+app.post("/api/downloads/:id/retry", async (c) => {
     try {
-        const taskId = ctx.params.id;
+        const taskId = c.req.param("id");
 
-        if (!validateRequiredString(taskId, 'taskId')) {
-            ctx.response.status = 400;
-            ctx.response.body = { error: '缺少或无效的任务ID' };
-            return;
+        if (!validateRequiredString(taskId, "taskId")) {
+            return c.json({ error: "缺少或无效的任务ID" }, 400);
         }
 
         logDebug(`重试下载任务: ${taskId}`);
 
         const task = downloadManager.getDownloadTask(taskId);
         if (!task) {
-            ctx.response.status = 404;
-            ctx.response.body = { error: '下载任务不存在' };
-            return;
+            return c.json({ error: "下载任务不存在" }, 404);
         }
 
         const success = await downloadManager.retryDownload(taskId);
-        ctx.response.body = { success, task: downloadManager.getDownloadTask(taskId) };
+        return c.json({ success, task: downloadManager.getDownloadTask(taskId) });
     } catch (error) {
-        logError('重试下载失败:', error);
-        ctx.response.status = 500;
-        ctx.response.body = { error: '重试下载失败' };
+        logError("重试下载失败:", error);
+        return c.json({ error: "重试下载失败" }, 500);
     }
 });
 
 // 删除下载任务
-router.delete('/api/downloads/:id', async (ctx) => {
+app.delete("/api/downloads/:id", async (c) => {
     try {
-        const taskId = ctx.params.id;
-        const deleteFile = ctx.request.url.searchParams.get('deleteFile') === 'true';
+        const taskId = c.req.param("id");
+        const deleteFile = c.req.query("deleteFile") === "true";
 
-        if (!validateRequiredString(taskId, 'taskId')) {
-            ctx.response.status = 400;
-            ctx.response.body = { error: '缺少或无效的任务ID' };
-            return;
+        if (!validateRequiredString(taskId, "taskId")) {
+            return c.json({ error: "缺少或无效的任务ID" }, 400);
         }
 
         logDebug(`删除下载任务: ${taskId}, 删除文件: ${deleteFile}`);
@@ -810,28 +679,27 @@ router.delete('/api/downloads/:id', async (ctx) => {
         if (success) {
             await downloadManager.saveToKV();
         }
-        ctx.response.body = { success };
+        return c.json({ success });
     } catch (error) {
-        logError('删除下载任务失败:', error);
-        ctx.response.status = 500;
-        ctx.response.body = { error: '删除下载任务失败' };
+        logError("删除下载任务失败:", error);
+        return c.json({ error: "删除下载任务失败" }, 500);
     }
 });
 
 // 获取下载统计
-router.get('/api/downloads/stats', (ctx) => {
-    ctx.response.body = {
+app.get("/api/downloads/stats", (c) => {
+    return c.json({
         stats: downloadManager.getStats(),
         active: downloadManager.getActiveDownloads().length,
         pending: downloadManager.getPendingDownloads().length,
         queue: downloadManager.getAllDownloadTasks().length
-    };
+    });
 });
 
 // 清除已完成下载
-router.post('/api/downloads/clear-completed', async (ctx) => {
+app.post("/api/downloads/clear-completed", async (c) => {
     try {
-        const body = await ctx.request.body.json().catch(() => ({}));
+        const body = await c.req.json().catch(() => ({}));
         const deleteFiles = body.deleteFiles === true;
 
         logDebug(`清除已完成下载任务, 删除文件: ${deleteFiles}`);
@@ -842,29 +710,28 @@ router.post('/api/downloads/clear-completed', async (ctx) => {
             logInfo(`已清除 ${result.count} 个已完成下载任务，删除 ${result.deletedFiles} 个文件`);
             await downloadManager.saveToKV();
         } else {
-            logInfo('没有可清除的已完成下载任务');
+            logInfo("没有可清除的已完成下载任务");
         }
 
-        ctx.response.body = {
+        return c.json({
             success: result.count > 0,
             clearedCount: result.count,
             deletedFiles: result.deletedFiles
-        };
+        });
     } catch (error) {
-        logError('清除已完成下载失败:', error);
-        ctx.response.status = 500;
-        ctx.response.body = { error: '清除已完成下载失败' };
+        logError("清除已完成下载失败:", error);
+        return c.json({ error: "清除已完成下载失败" }, 500);
     }
 });
 
 // 健康检查端点
-router.get('/api/health', (ctx) => {
+app.get("/api/health", (c) => {
     const sourcesHealth = videoSourceManager.getHealthStatus();
-    const healthySources = Object.values(sourcesHealth).filter(h => h.status === 'healthy').length;
+    const healthySources = Object.values(sourcesHealth).filter(h => h.status === "healthy").length;
     const totalSources = Object.keys(sourcesHealth).length;
 
-    ctx.response.body = {
-        status: healthySources > 0 ? 'ok' : 'degraded',
+    return c.json({
+        status: healthySources > 0 ? "ok" : "degraded",
         timestamp: new Date().toISOString(),
         uptime: performance.now(),
         sources: {
@@ -876,62 +743,259 @@ router.get('/api/health', (ctx) => {
             active: downloadManager.getActiveDownloads().length,
             pending: downloadManager.getPendingDownloads().length,
             total: downloadManager.getAllDownloadTasks().length
-        }
+        },
+        wsClients: rpcServer.getClientCount()
+    });
+});
+
+// ==================== WebSocket 升级处理 ====================
+
+app.get("/ws", (c) => {
+    const upgrade = c.req.header("upgrade");
+    if (upgrade !== "websocket") {
+        return c.text("Expected websocket", 400);
+    }
+
+    const { socket, response } = Deno.upgradeWebSocket(c.req.raw);
+    rpcServer.handleConnection(socket);
+
+    return response;
+});
+
+// ==================== 注册 RPC 方法 ====================
+
+rpcServer.register("sources.getAll", () => videoSourceManager.getAllSources());
+
+rpcServer.register("sources.getHealth", () => ({
+    health: videoSourceManager.getHealthStatus(),
+    initialized: videoSourceManager.isInitialized(),
+    activeSourceId: videoSourceManager.getActiveSourceId()
+}));
+
+rpcServer.register("sources.reinit", async (...params: unknown[]) => {
+    const sourceId = params[0] as string;
+    const success = await videoSourceManager.initSource(sourceId);
+    return {
+        success,
+        health: videoSourceManager.getHealthStatus()[sourceId]
     };
 });
 
-// 静态文件服务
-app.use(async (ctx, next) => {
-    const path = ctx.request.url.pathname;
+rpcServer.register("sources.getActive", () => {
+    const activeSource = videoSourceManager.getActiveSource();
+    const sourceId = videoSourceManager.getActiveSourceId();
+    return {
+        id: sourceId,
+        name: activeSource?.getName() || null
+    };
+});
 
-    // 如果是API请求，跳过
-    if (path.startsWith('/api/')) {
+rpcServer.register("sources.setActive", async (...params: unknown[]) => {
+    const sourceId = params[0] as string;
+    const success = videoSourceManager.setActiveSource(sourceId);
+    if (success) {
+        const newSource = videoSourceManager.getActiveSource();
+        if (newSource) {
+            pushSourceChange(newSource.getId(), newSource.getName());
+        }
+    }
+    return { success };
+});
+
+rpcServer.register("videos.getHome", async (...params: unknown[]) => {
+    const page = (params[0] as number) || 1;
+    const activeSource = videoSourceManager.getActiveSource();
+    if (!activeSource) throw new Error("没有活动的视频源");
+    return activeSource.getHomeVideos(page);
+});
+
+rpcServer.register("videos.search", async (...params: unknown[]) => {
+    const query = params[0] as string;
+    const page = (params[1] as number) || 1;
+    const activeSource = videoSourceManager.getActiveSource();
+    if (!activeSource) throw new Error("没有活动的视频源");
+    return activeSource.searchVideos(query, page);
+});
+
+rpcServer.register("series.getDetail", async (...params: unknown[]) => {
+    const seriesId = params[0] as string;
+    const url = params[1] as string | undefined;
+    const detail = await videoSourceManager.getSeries(seriesId, url || undefined);
+    if (!detail) throw new Error("系列不存在");
+    return detail;
+});
+
+rpcServer.register("series.getVideos", async (...params: unknown[]) => {
+    const seriesId = params[0] as string;
+    const result = await videoSourceManager.getSeriesVideos(seriesId);
+    if (!result) throw new Error("系列不存在");
+    return result;
+});
+
+rpcServer.register("videos.parse", async (...params: unknown[]) => {
+    const url = params[0] as string;
+    const activeSource = videoSourceManager.getActiveSource();
+    if (!activeSource) throw new Error("没有活动的视频源");
+    const results = await activeSource.parseVideoUrl(url);
+    return { results };
+});
+
+rpcServer.register("m3u8.parse", async (...params: unknown[]) => {
+    const url = params[0] as string;
+    const results = await M3U8Service.fetchAndParseM3U8(url);
+    return { results };
+});
+
+rpcServer.register("downloads.getAll", () => {
+    return { tasks: downloadManager.getAllDownloadTasks() };
+});
+
+rpcServer.register("downloads.get", (...params: unknown[]) => {
+    const taskId = params[0] as string;
+    const task = downloadManager.getDownloadTask(taskId);
+    if (!task) throw new Error("下载任务不存在");
+    return { task };
+});
+
+rpcServer.register("downloads.create", (...params: unknown[]) => {
+    const title = params[0] as string;
+    const url = params[1] as string;
+    const outputPath = params[2] as string | undefined;
+    const referer = params[3] as string | undefined;
+    const taskId = downloadManager.createDownloadTask(url, title, outputPath, referer);
+    const task = downloadManager.getDownloadTask(taskId);
+    return { task };
+});
+
+rpcServer.register("downloads.start", async (...params: unknown[]) => {
+    const taskId = params[0] as string;
+    const task = downloadManager.getDownloadTask(taskId);
+    if (!task) throw new Error("下载任务不存在");
+    if (task.status === "downloading") {
+        return { success: true, message: "任务已在下载中" };
+    }
+    if (task.status === "completed") {
+        return { success: true, message: "任务已下载完成" };
+    }
+    downloadManager.startDownload(taskId);
+    return { success: true, message: "任务已加入下载队列", task: downloadManager.getDownloadTask(taskId) };
+});
+
+rpcServer.register("downloads.cancel", async (...params: unknown[]) => {
+    const taskId = params[0] as string;
+    const success = downloadManager.cancelDownload(taskId);
+    if (success) {
+        await downloadManager.saveToKV();
+    }
+    return { success };
+});
+
+rpcServer.register("downloads.retry", async (...params: unknown[]) => {
+    const taskId = params[0] as string;
+    const success = await downloadManager.retryDownload(taskId);
+    return { success, task: downloadManager.getDownloadTask(taskId) };
+});
+
+rpcServer.register("downloads.delete", async (...params: unknown[]) => {
+    const taskId = params[0] as string;
+    const deleteFile = params[1] as boolean;
+    const success = downloadManager.deleteDownload(taskId, deleteFile);
+    if (success) {
+        await downloadManager.saveToKV();
+    }
+    return { success };
+});
+
+rpcServer.register("downloads.getStats", () => {
+    return {
+        stats: downloadManager.getStats(),
+        active: downloadManager.getActiveDownloads().length,
+        pending: downloadManager.getPendingDownloads().length,
+        queue: downloadManager.getAllDownloadTasks().length
+    };
+});
+
+rpcServer.register("downloads.clearCompleted", async (...params: unknown[]) => {
+    const deleteFiles = params[0] as boolean;
+    const result = downloadManager.clearCompletedDownloads(deleteFiles);
+    if (result.count > 0) {
+        await downloadManager.saveToKV();
+    }
+    return {
+        success: result.count > 0,
+        clearedCount: result.count,
+        deletedFiles: result.deletedFiles
+    };
+});
+
+rpcServer.register("health.get", () => {
+    const sourcesHealth = videoSourceManager.getHealthStatus();
+    const healthySources = Object.values(sourcesHealth).filter(h => h.status === "healthy").length;
+    const totalSources = Object.keys(sourcesHealth).length;
+
+    return {
+        status: healthySources > 0 ? "ok" : "degraded",
+        timestamp: new Date().toISOString(),
+        uptime: performance.now(),
+        sources: {
+            total: totalSources,
+            healthy: healthySources,
+            initialized: videoSourceManager.isInitialized()
+        },
+        downloads: {
+            active: downloadManager.getActiveDownloads().length,
+            pending: downloadManager.getPendingDownloads().length,
+            total: downloadManager.getAllDownloadTasks().length
+        },
+        wsClients: rpcServer.getClientCount()
+    };
+});
+
+// ==================== 静态文件服务（SPA 回退）====================
+
+// 根路径返回index.html
+app.get("/", serveStatic({ path: "./public/index.html" }));
+
+// 静态文件服务 - 使用Hono的serveStatic
+app.use("/*", serveStatic({ root: "./public" }));
+
+// SPA回退：对于前端路由，返回index.html
+app.use("*", async (c, next) => {
+    const path = c.req.path;
+
+    // API和WebSocket请求跳过
+    if (path.startsWith("/api/") || path.startsWith("/ws")) {
         await next();
         return;
     }
 
-    // 尝试提供静态文件
+    // 其他所有请求返回index.html
     try {
-        await Deno.readFile(`./public${path}`);
-        await send(ctx, path, {
-            root: './public',
-            index: 'index.html'
-        });
+        const html = await Deno.readTextFile("./public/index.html");
+        return c.html(html);
     } catch {
-        // 如果文件不存在，返回index.html（用于SPA）
-        try {
-            await send(ctx, '/index.html', {
-                root: './public'
-            });
-        } catch {
-            ctx.response.status = 404;
-            ctx.response.body = 'Not Found';
-        }
+        return c.text("Not Found", 404);
     }
 });
 
-// 注册路由
-app.use(router.routes());
-app.use(router.allowedMethods());
+// ==================== 启动服务器 ====================
 
-// 启动服务器
 const port = config.server.port;
 
 // 加载持久化的下载任务
 try {
     await downloadManager.loadFromKV();
 } catch (error) {
-    logWarn('加载持久化下载任务失败:', error);
+    logWarn("加载持久化下载任务失败:", error);
 }
 
-// 初始化视频源（使用管理器内部的超时控制）
-logInfo('开始初始化视频源...');
+// 初始化视频源
+logInfo("开始初始化视频源...");
 try {
     await videoSourceManager.initAllSources();
-    logInfo('视频源初始化完成');
+    logInfo("视频源初始化完成");
 } catch (error) {
-    logError('视频源初始化失败:', error);
-    // 即使初始化失败，也继续启动服务器，但服务可能功能受限
+    logError("视频源初始化失败:", error);
 }
 
 // 定期保存下载任务（每30秒）
@@ -939,39 +1003,50 @@ setInterval(async () => {
     try {
         await downloadManager.saveToKV();
     } catch (error) {
-        logError('保存下载任务失败:', error);
+        logError("保存下载任务失败:", error);
     }
 }, 30000);
 
+// 启动下载状态推送定时器
+setInterval(() => {
+    const tasks = downloadManager.getAllDownloadTasks();
+    const activeTasks = tasks.filter((t: { status: string }) =>
+        t.status === "downloading" || t.status === "pending"
+    );
+    if (activeTasks.length > 0) {
+        pushDownloadUpdate(tasks);
+    }
+}, 2000);
+
 // 优雅关闭处理
 const gracefulShutdown = async () => {
-    logInfo('正在关闭服务器...');
+    logInfo("正在关闭服务器...");
 
-    // 停止健康检查
     videoSourceManager.stopHealthCheck();
 
-    // 保存下载任务
     try {
         await downloadManager.saveToKV();
-        logInfo('下载任务已保存');
+        logInfo("下载任务已保存");
     } catch (error) {
-        logError('保存下载任务失败:', error);
+        logError("保存下载任务失败:", error);
     }
 
-    // 停止清理定时器
     downloadManager.stopCleanupTimer();
 
-    logInfo('服务器已关闭');
+    logInfo("服务器已关闭");
     Deno.exit(0);
 };
 
-// 监听关闭信号
-Deno.addSignalListener('SIGINT', gracefulShutdown);
+Deno.addSignalListener("SIGINT", gracefulShutdown);
 
 logInfo(`服务器启动在 http://localhost:${port}`);
+logInfo(`HTTP API: http://localhost:${port}/api`);
+logInfo(`WebSocket: ws://localhost:${port}/ws`);
+
 if (config.server.verboseLogging) {
-    logInfo('Verbose logging is enabled. Set verboseLogging=false in config.json to disable.');
+    logInfo("Verbose logging is enabled. Set verboseLogging=false in config.json to disable.");
 }
 
-export const SERVER_ADDR = 'http://localhost:' + port;
-await app.listen({ port });
+export const SERVER_ADDR = `http://localhost:${port}`;
+
+Deno.serve({ port }, app.fetch);
