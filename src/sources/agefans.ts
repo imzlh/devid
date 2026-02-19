@@ -160,9 +160,10 @@ export default class AGEFans extends BaseVideoSource {
         return n;
     }
 
-    override async getSeries(seriesId: string): Promise<ISeriesResult | null> {
-        const url = new URL(`/detail/${seriesId}`, this.baseUrl);
-        const page = await getDocument(url.href);
+    override async getSeries(seriesId: string, url?: string): Promise<ISeriesResult | null> {
+        // 优先使用传入的URL，否则根据ID构造URL
+        const pageUrl = url ?? new URL(`/detail/${seriesId}`, this.baseUrl).href;
+        const page = await getDocument(pageUrl);
         const node = page.querySelectorAll('.tab-content > .tab-pane');
         const res: IEpisode[] = [];
         for (const el of node) {
@@ -408,7 +409,8 @@ export default class AGEFans extends BaseVideoSource {
             {
                 quality: "1080p",
                 url: decodeURIComponent(res.url),
-                format: res.type == 'dplayer' ? 'm3u8' : 'h5'
+                format: res.type == 'dplayer' ? 'm3u8' : 'h5',
+                skipProxy: true
             }
         ];
     }

@@ -520,17 +520,26 @@ class VideoPlayerManager {
 
         this.currentQualityIndex = index;
 
-        // 根据格式处理不同的URL
+        // 根据skipProxy选项决定是否使用代理
         let videoUrl;
-        if (quality.format === 'h5') {
-            // H5: 使用预配后缀名
-            let extname = new URL(quality.url).pathname.split('.').pop() || 'mp4';
-            if (extname.includes('/') || extname.length >= 5)
-                extname = 'mp4';
-            videoUrl = `/api/proxy/video.${extname}?url=${encodeURIComponent(quality.url)}&source=${this.currentVideo.source}&referer=${encodeURIComponent(this.currentVideo.url)}`;
+        if (quality.skipProxy) {
+            // 跳过代理，直接使用原始URL
+            videoUrl = quality.url;
         } else {
-            // M3U8使用代理
-            videoUrl = `/api/proxy/video.m3u8?url=${encodeURIComponent(quality.url)}&source=${this.currentVideo.source}&referer=${encodeURIComponent(this.currentVideo.url)}`;
+            // 使用代理
+            // 优先使用quality.referrer，如果没有则使用当前视频URL
+            const referer = quality.referrer || this.currentVideo.url;
+            const refererParam = `&referer=${encodeURIComponent(referer)}`;
+            if (quality.format === 'h5') {
+                // H5: 使用预配后缀名
+                let extname = new URL(quality.url).pathname.split('.').pop() || 'mp4';
+                if (extname.includes('/') || extname.length >= 5)
+                    extname = 'mp4';
+                videoUrl = `/api/proxy/video.${extname}?url=${encodeURIComponent(quality.url)}&source=${this.currentVideo.source}${refererParam}`;
+            } else {
+                // M3U8使用代理
+                videoUrl = `/api/proxy/video.m3u8?url=${encodeURIComponent(quality.url)}&source=${this.currentVideo.source}${refererParam}`;
+            }
         }
 
         try {

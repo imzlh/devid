@@ -3,12 +3,14 @@ import S_KPDZ from './sources/kpdz.ts';
 import S_AGEFANS from './sources/agefans.ts';
 import S_17C from './sources/17c.ts';
 import S_HZW from './sources/hzw.ts';
+import S_AKI from './sources/aki.ts';
 import { BaseVideoSource } from "./sources/index.ts";
 
 export const SOURCES: { new(): BaseVideoSource }[] = [
-    S_AGEFANS,
-    S_GG51,
-    S_KPDZ,
-    S_17C,
-    S_HZW
+    S_AKI
+    // S_AGEFANS,
+    // S_GG51,
+    // S_KPDZ,
+    // S_17C,
+    // S_HZW
 ];

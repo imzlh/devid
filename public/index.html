@@ -57,6 +57,9 @@
                         <i class="fas fa-search"></i>
                     </button>
                 </div>
+                <button class="mobile-theme-toggle" id="mobileThemeToggle" title="切换主题">
+                    <i class="fas fa-moon"></i>
+                </button>
                 <div class="header-actions">
                       <div class="source-info">
                           <span class="current-source" id="currentSource">未选择视频源</span>
@@ -64,9 +67,6 @@
                               <i class="fas fa-cog"></i> <span class="btn-text">管理</span>
                           </button>
                       </div>
-                      <button class="mobile-theme-toggle" id="mobileThemeToggle" title="切换主题">
-                          <i class="fas fa-moon"></i>
-                      </button>
                   </div>
             </div>
         </header>
@@ -75,6 +75,7 @@
         <div class="content-area" id="contentArea">
             <!-- 首页内容 -->
             <div class="page-content" id="homePage">
+                <div id="recentWatch"></div>
                 <div class="page-title">
                     <h2>热门视频</h2>
                     <div class="pagination" id="homePagination"></div>

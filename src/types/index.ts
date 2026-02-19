@@ -73,8 +73,8 @@ export interface ISeriesDetail {
     thumbnail: string;
     cover?: string;
     banner?: string;
-    type: ISeriesType;
-    status: ISeriesStatus;
+    type?: ISeriesType;
+    status?: ISeriesStatus;
     year?: number;
     country?: string;
     genres?: string[];
@@ -91,10 +91,6 @@ export interface ISeriesDetail {
 // 系列剧集列表结果
 export interface ISeriesResult extends ISeriesDetail {
     seriesId: string;
-    title: string;
-    episodes: IEpisode[];
-    totalEpisodes: number;
-    source: string;
 }
 
 // 视频源健康状态
@@ -123,6 +119,8 @@ export interface IM3U8Result {
     resolution?: string;
     bandwidth?: number;
     format?: 'm3u8' | 'h5';  // 支持M3U8和MP4格式
+    referrer?: string;  // 用于前端?referer参数
+    skipProxy?: boolean;  // 是否跳过代理，直接使用原始URL播放
 }
 
 // 下载任务

@@ -22,6 +22,9 @@
  * @property {string} quality - 画质名称
  * @property {string} resolution - 分辨率
  * @property {number} bandwidth - 带宽
+ * @property {string} format - 格式(m3u8/h5)
+ * @property {string} referrer - 来源URL
+ * @property {boolean} skipProxy - 是否跳过代理直接使用原始URL
  */
 
 /**
@@ -48,9 +51,10 @@ class APIManager {
      * 发送HTTP请求
      * @param {string} url - 请求URL
      * @param {RequestInit} options - 请求选项
+     * @param {number} retryCount - 当前重试次数
      * @returns {Promise<any>}
      */
-    async request(url, options = {}) {
+    async request(url, options = {}, retryCount = 0) {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), this.requestTimeout);
         
@@ -67,7 +71,17 @@ class APIManager {
             clearTimeout(timeoutId);
             
             if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                // 尝试解析错误响应
+                let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+                try {
+                    const errorData = await response.json();
+                    if (errorData.error) {
+                        errorMessage = errorData.error;
+                    }
+                } catch {
+                    // 忽略解析错误
+                }
+                throw new Error(errorMessage);
             }
             
             const contentType = response.headers.get('content-type');
@@ -80,7 +94,14 @@ class APIManager {
             clearTimeout(timeoutId);
             
             if (error.name === 'AbortError') {
-                throw new Error('请求超时');
+                throw new Error('请求超时，请检查网络连接');
+            }
+            
+            // 网络错误重试机制
+            const maxRetries = 2;
+            if (retryCount < maxRetries && (error.message.includes('fetch') || error.message.includes('network'))) {
+                await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
+                return this.request(url, options, retryCount + 1);
             }
             
             throw error;
@@ -147,11 +168,13 @@ class APIManager {
 
     /**
      * 获取系列信息
-     * @param {number} series
+     * @param {string} seriesId - 系列ID
+     * @param {string} [url] - 可选的系列页面URL
      * @returns {Record<>}
      */
-    async getSeriesDetail(series) {
-        return this.get('/api/series/' + series);
+    async getSeriesDetail(seriesId, url) {
+        const urlParam = url ? `?url=${encodeURIComponent(url)}` : '';
+        return this.get('/api/series/' + seriesId + urlParam);
     }
 
     /**

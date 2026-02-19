@@ -4,9 +4,9 @@
  */
 import { BaseVideoSource, ImageData } from './index.ts';
 import { IVideoItem, IVideoList, IM3U8Result } from '../types/index.ts';
-import { fetch2, getImage as fetchImage, findAvailableFast } from '../utils/fetch.ts';
-import { Document, DOMParser } from "dom";
-import { logError, logInfo } from "../utils/logger.ts";
+import { fetch2 } from '../utils/fetch.ts';
+import { DOMParser } from "dom";
+import { logInfo } from "../utils/logger.ts";
 import assert from "node:assert";
 import { createDecipheriv } from "node:crypto";
 import { Buffer } from "node:buffer";

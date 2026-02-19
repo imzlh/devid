@@ -487,8 +487,9 @@ export default class HZWSource extends BaseVideoSource {
         }
     }
 
-    override async getSeries(seriesId: string): Promise<ISeriesResult | null> {
+    override async getSeries(seriesId: string, url?: string): Promise<ISeriesResult | null> {
         assert(seriesId == 'short-video', "非短视频不支持序列");
+        // hzw源的短视频系列不需要URL参数，忽略传入的url
 
         const res = await this.req<IShortVideoInfo[]>('/ui/api/shortVideo/byRecommend', {
             "pageIndex": 1,

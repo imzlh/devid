@@ -232,20 +232,21 @@ router.get('/api/search', async (ctx) => {
 
 // ==================== 系列 API（简洁版） ====================
 
-// 获取系列详情（基本信息，不包含完整剧集列表）
+// 获取系列详情（支持通过ID或URL获取）
 router.get('/api/series/:id', async (ctx) => {
     try {
         const seriesId = ctx.params.id;
+        const url = ctx.request.url.searchParams.get('url');
 
-        if (!seriesId) {
+        if (!seriesId && !url) {
             ctx.response.status = 400;
-            ctx.response.body = { error: '缺少系列ID' };
+            ctx.response.body = { error: '缺少系列ID或URL' };
             return;
         }
 
-        logDebug(`获取系列详情: ${seriesId}`);
+        logDebug(`获取系列详情: id=${seriesId}, url=${url}`);
 
-        const detail = await videoSourceManager.getSeries(seriesId);
+        const detail = await videoSourceManager.getSeries(seriesId, url ?? undefined);
         if (!detail) {
             ctx.response.status = 404;
             ctx.response.body = { error: '系列不存在' };
@@ -369,13 +370,18 @@ async function handleProxyRequest(
 
         // 准备请求头
         const requestHeaders: Record<string, string> = {
-            'Referer': referer || '',
-            'Origin': referer ? new URL(referer).origin : '',
+            'Accept': '*/*'
         };
 
         // 转发 Range 请求头（用于 seek）
         if (range) {
             requestHeaders['Range'] = range;
+        }
+
+        // 添加referer
+        if (referer) {
+            requestHeaders['Referer'] = referer;
+            requestHeaders['Origin'] = referer ? new URL(referer).origin : '';
         }
 
         // 获取原始内容（使用更长的超时时间，适合大文件下载）
@@ -557,7 +563,7 @@ router.get('/api/proxy/:name', async (ctx) => {
     } catch (error) {
         logError('处理代理请求失败:', error);
         ctx.response.status = 500;
-        ctx.response.body = { error: '处理代理请求失败' };
+        ctx.response.body = { error: error instanceof Error ? error.message : '处理代理请求失败' };
     }
 });
 

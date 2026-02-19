@@ -351,4 +351,79 @@ class Utils {
             }
         }
     }
+
+    /**
+     * 系列类型映射
+     * @param {string} type - 类型代码
+     * @returns {string}
+     */
+    static getTypeText(type) {
+        const typeMap = {
+            'anime': '动漫',
+            'drama': '剧集',
+            'movie': '电影',
+            'variety': '综艺',
+            'documentary': '纪录片',
+            'other': '其他'
+        };
+        return typeMap[type] || type;
+    }
+
+    /**
+     * 系列状态映射
+     * @param {string} status - 状态代码
+     * @returns {string}
+     */
+    static getStatusText(status) {
+        const statusMap = {
+            'ongoing': '连载中',
+            'completed': '已完结',
+            'upcoming': '即将上映',
+            'hiatus': '暂停更新'
+        };
+        return statusMap[status] || status;
+    }
+
+    /**
+     * 格式化观看数
+     * @param {number} views - 观看数
+     * @returns {string}
+     */
+    static formatViews(views) {
+        if (!views || views === 0) return '0';
+        if (views >= 100000000) {
+            return (views / 100000000).toFixed(1) + '亿';
+        } else if (views >= 10000) {
+            return (views / 10000).toFixed(1) + '万';
+        }
+        return views.toString();
+    }
+
+    /**
+     * 获取默认缩略图
+     * @returns {string}
+     */
+    static getDefaultThumbnail() {
+        return '/default.webp';
+    }
+
+    /**
+     * 格式化相对时间
+     * @param {number} timestamp - 时间戳
+     * @returns {string}
+     */
+    static formatTimeAgo(timestamp) {
+        const now = Date.now();
+        const diff = now - timestamp;
+        
+        const minute = 60 * 1000;
+        const hour = 60 * minute;
+        const day = 24 * hour;
+        
+        if (diff < minute) return '刚刚';
+        if (diff < hour) return `${Math.floor(diff / minute)}分钟前`;
+        if (diff < day) return `${Math.floor(diff / hour)}小时前`;
+        if (diff < 7 * day) return `${Math.floor(diff / day)}天前`;
+        return new Date(timestamp).toLocaleDateString();
+    }
 }

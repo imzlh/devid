@@ -70,8 +70,12 @@ export abstract class BaseVideoSource {
         });
     }
 
-    // 获取系列剧集列表（点击系列后调用，返回完整剧集列表）
-    async getSeries(seriesId: string): Promise<ISeriesResult | null> {
+    /**
+     * 获取系列剧集列表（点击系列后调用，返回完整剧集列表）
+     * @param seriesId - 系列ID
+     * @param url - 可选的系列页面URL，如果提供则优先使用
+     */
+    async getSeries(seriesId: string, url?: string): Promise<ISeriesResult | null> {
         throw new Error('该视频源不支持系列列表功能');
     }
 }

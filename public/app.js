@@ -352,10 +352,13 @@ class VideoManager {
      * 绑定移动端事件
      */
     bindMobileEvents() {
+        // 滑动隐藏/显示导航栏
+        this.initSwipeToHideNav();
+
         if (window.innerWidth <= 768) {
             const sidebar = DOMHelper.$('#sidebar');
             const mainContent = DOMHelper.$('#mainContent');
-            
+
             if (sidebar && mainContent) {
                 DOMHelper.on(mainContent, 'click', () => {
                     sidebar.classList.remove('show');
@@ -363,7 +366,73 @@ class VideoManager {
             }
         }
     }
-    
+
+    /**
+     * 初始化滑动隐藏导航栏功能
+     */
+    initSwipeToHideNav() {
+        if (window.innerWidth > 768) return;
+
+        const topHeader = DOMHelper.$('.top-header');
+        const sidebar = DOMHelper.$('#sidebar');
+        const contentArea = DOMHelper.$('#contentArea');
+
+        if (!topHeader || !sidebar || !contentArea) return;
+
+        let startY = 0;
+        let currentY = 0;
+        let isScrolling = false;
+        let lastScrollY = window.scrollY;
+        let scrollThreshold = 10; // 滚动阈值
+
+        // 监听滚动事件
+        DOMHelper.on(window, 'scroll', () => {
+            const currentScrollY = window.scrollY;
+            const scrollDiff = currentScrollY - lastScrollY;
+
+            // 向下滚动超过阈值，隐藏导航栏
+            if (scrollDiff > scrollThreshold && currentScrollY > 100) {
+                topHeader.classList.add('nav-hidden');
+                sidebar.classList.add('nav-hidden');
+            }
+            // 向上滚动，显示导航栏
+            else if (scrollDiff < -scrollThreshold) {
+                topHeader.classList.remove('nav-hidden');
+                sidebar.classList.remove('nav-hidden');
+            }
+
+            lastScrollY = currentScrollY;
+        }, { passive: true });
+
+        // 触摸滑动支持
+        DOMHelper.on(contentArea, 'touchstart', (e) => {
+            startY = e.touches[0].clientY;
+            isScrolling = true;
+        }, { passive: true });
+
+        DOMHelper.on(contentArea, 'touchmove', (e) => {
+            if (!isScrolling) return;
+            currentY = e.touches[0].clientY;
+        }, { passive: true });
+
+        DOMHelper.on(contentArea, 'touchend', () => {
+            if (!isScrolling) return;
+            isScrolling = false;
+
+            const diff = currentY - startY;
+            // 向上滑动（隐藏）
+            if (diff < -50) {
+                topHeader.classList.add('nav-hidden');
+                sidebar.classList.add('nav-hidden');
+            }
+            // 向下滑动（显示）
+            else if (diff > 50) {
+                topHeader.classList.remove('nav-hidden');
+                sidebar.classList.remove('nav-hidden');
+            }
+        }, { passive: true });
+    }
+
     /**
      * 绑定键盘事件
      */
@@ -572,19 +641,33 @@ class VideoManager {
     }
     
     /**
+     * 带加载状态的异步操作包装器
+     * @param {Function} asyncFn - 异步操作函数
+     * @param {string} [errorMsg] - 错误消息
+     * @param {boolean} [showLoadingState=true] - 是否显示加载状态
+     * @returns {Promise<any>} 操作结果
+     */
+    async withLoading(asyncFn, errorMsg, showLoadingState = true) {
+        if (showLoadingState) this.showLoading();
+        try {
+            return await asyncFn();
+        } catch (error) {
+            if (errorMsg) this.notifications.error(errorMsg);
+            console.error(errorMsg || '操作失败:', error);
+            throw error;
+        } finally {
+            if (showLoadingState) this.hideLoading();
+        }
+    }
+
+    /**
      * 加载视频源列表
      */
     async loadSources() {
-        try {
-            this.showLoading();
+        await this.withLoading(async () => {
             const data = await this.api.getSources();
             this.renderSources(data || []);
-        } catch (error) {
-            this.notifications.error('加载视频源失败');
-            console.error('Load sources error:', error);
-        } finally {
-            this.hideLoading();
-        }
+        }, '加载视频源失败');
     }
     
     /**
@@ -723,14 +806,16 @@ class VideoManager {
      * 渲染最近观看区域
      */
     renderRecentWatch() {
-        const container = DOMHelper.$('#homeVideoGrid');
+        const container = DOMHelper.$('#recentWatch');
         if (!container) return;
         
         // 清空容器
         container.innerHTML = '';
         
         // 获取最近观看记录
-        const recent = this.playerManager.progress.getRecentWatch(4);
+        const recent = this.playerManager.progress.getRecentWatch()
+            .filter(e => e.source == this.currentSource.id)
+            .slice(0, 4);
         if (recent.length === 0) return;
         
         // 创建最近观看区域
@@ -738,7 +823,7 @@ class VideoManager {
         recentSection.innerHTML = `
             <div class="section-header">
                 <h3><i class="fas fa-history"></i> 最近观看</h3>
-                <button class="btn btn-small btn-text" id="clearRecentWatch">清除记录</button>
+                <button class="btn btn-large" id="clearRecentWatch">清除记录</button>
             </div>
             <div class="recent-watch-grid" id="recentWatchGrid"></div>
         `;
@@ -753,11 +838,11 @@ class VideoManager {
             
             card.innerHTML = `
                 <div class="video-thumbnail">
-                    <img src="${item.thumbnail || this.getDefaultThumbnail()}" 
+                    <img src="${item.thumbnail || Utils.getDefaultThumbnail()}" 
                          alt="${item.title}" 
                          loading="lazy"
-                         onerror="this.src='${this.getDefaultThumbnail()}'">
-                    <div class="video-duration">${this.formatDuration(item.progress)} / ${this.formatDuration(item.duration)}</div>
+                         onerror="this.src='${Utils.getDefaultThumbnail()}'">
+                    <div class="video-duration">${Utils.formatDuration(item.progress)} / ${Utils.formatDuration(item.duration)}</div>
                     <div class="watch-progress-bar" style="width: ${progressPercent}%"></div>
                     <div class="video-actions-overlay">
                         <button class="btn btn-large btn-primary video-resume-btn" title="继续观看">
@@ -771,7 +856,7 @@ class VideoManager {
                     <div class="video-meta">
                         ${item.episodeNumber ? `第${item.episodeNumber}集 · ` : ''}${item.source}
                     </div>
-                    <div class="watch-time">${this.formatTimeAgo(item.lastWatch)}</div>
+                    <div class="watch-time">${Utils.formatTimeAgo(item.lastWatch)}</div>
                 </div>
             `;
             
@@ -804,11 +889,6 @@ class VideoManager {
         }
         
         container.appendChild(recentSection);
-        
-        // 添加分隔线
-        const divider = DOMHelper.create('div', 'section-divider');
-        divider.innerHTML = '<h3><i class="fas fa-fire"></i> 热门推荐</h3>';
-        container.appendChild(divider);
     }
     
     /**
@@ -855,38 +935,6 @@ class VideoManager {
         } finally {
             this.hideLoading();
         }
-    }
-    
-    /**
-     * 格式化时长
-     * @param {number} seconds - 秒数
-     * @returns {string}
-     */
-    formatDuration(seconds) {
-        if (!seconds || isNaN(seconds)) return '00:00';
-        const mins = Math.floor(seconds / 60);
-        const secs = Math.floor(seconds % 60);
-        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-    }
-    
-    /**
-     * 格式化相对时间
-     * @param {number} timestamp - 时间戳
-     * @returns {string}
-     */
-    formatTimeAgo(timestamp) {
-        const now = Date.now();
-        const diff = now - timestamp;
-        
-        const minute = 60 * 1000;
-        const hour = 60 * minute;
-        const day = 24 * hour;
-        
-        if (diff < minute) return '刚刚';
-        if (diff < hour) return `${Math.floor(diff / minute)}分钟前`;
-        if (diff < day) return `${Math.floor(diff / hour)}小时前`;
-        if (diff < 7 * day) return `${Math.floor(diff / day)}天前`;
-        return new Date(timestamp).toLocaleDateString();
     }
     
     /**
@@ -955,7 +1003,7 @@ class VideoManager {
         container.innerHTML = '';
         
         if (!videos || videos.length === 0) {
-            container.innerHTML = '<div class="text-center">暂无视频</div>';
+            container.innerHTML += '<div class="text-center">暂无视频</div>';
             return;
         }
         
@@ -978,7 +1026,7 @@ class VideoManager {
         // 处理缩略图
         const thumbnailUrl = video.thumbnail ?
             this.api.getImageProxyUrl(video.thumbnail, video.source) :
-            this.getDefaultThumbnail();
+            Utils.getDefaultThumbnail();
 
         // 检查播放进度
         let progressBadge = '';
@@ -999,7 +1047,7 @@ class VideoManager {
                 <img src="${thumbnailUrl}"
                      alt="${video.title}"
                      loading="lazy"
-                     onerror="this.src='${this.getDefaultThumbnail()}'">
+                     onerror="this.src='${Utils.getDefaultThumbnail()}'">
                 <div class="video-duration">${video.duration || '未知'}</div>
                 ${badgeHtml}
                 ${progressBadge}
@@ -1115,7 +1163,6 @@ class VideoManager {
         // 处理边界情况
         if (index < 0) return;
         if (index >= this.infiniteQueue.length) {
-            // 当前批次播完，加载新批次
             await this.loadInfiniteBatch();
             if (this.infiniteQueue.length > 0) {
                 index = 0;
@@ -1127,81 +1174,45 @@ class VideoManager {
 
         this.infiniteIndex = index;
         const episode = this.infiniteQueue[index];
-
-        // 解析标题（格式：视频标题/作者名）
         const titleParts = episode.title ? episode.title.split('/') : [];
         const videoTitle = titleParts[0] || episode.title || `第${index + 1}个`;
         const authorName = titleParts[1] || '';
+        const displayTitle = authorName ? `${videoTitle} - ${authorName}` : videoTitle;
 
-        // 打开模态框
-        const modal = DOMHelper.$('#videoModal');
-        const modalTitle = DOMHelper.$('#modalTitle');
-        const videoPlayer = DOMHelper.$('#videoPlayer');
-        const videoDetailInfo = DOMHelper.$('#videoDetailInfo');
-        const qualitySelection = DOMHelper.$('#qualitySelection');
+        const success = await this.initVideoPlayback({
+            title: displayTitle,
+            url: episode.url,
+            source: this.infiniteVideo.source,
+            thumbnail: episode.thumbnail || this.infiniteVideo.thumbnail,
+            parseVideoFn: async () => {
+                const parseResult = await this.api.parseVideo(episode.url, this.infiniteVideo.source);
+                return parseResult.results || [];
+            },
+            renderControlsFn: () => `
+                <div class="infinite-controls">
+                    <span class="infinite-progress"><i class="fas fa-infinity"></i> ${index + 1} / ${this.infiniteQueue.length}</span>
+                    <button class="btn btn-secondary btn-lg" id="infinitePrev" ${index === 0 ? 'disabled' : ''}>
+                        <i class="fas fa-step-backward"></i> 上一个
+                    </button>
+                    <button class="btn btn-secondary btn-lg" id="infiniteNext">
+                        下一个 <i class="fas fa-step-forward"></i>
+                    </button>
+                </div>
+            `,
+            playerOptions: {
+                isInfinite: true,
+                onEnded: () => this.handleInfiniteEnded(),
+                onPrev: () => this.playInfiniteVideo(index - 1),
+                onNext: () => this.playInfiniteVideo(index + 1)
+            },
+            loadingText: '正在加载...'
+        });
 
-        if (!modal || !videoPlayer) return;
-
-        // 模态框标题显示视频标题和作者
-        modalTitle.textContent = authorName ? `${videoTitle} - ${authorName}` : videoTitle;
-        videoPlayer.innerHTML = '<div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #666;">正在加载...</div>';
-        videoDetailInfo.innerHTML = '';
-        qualitySelection.innerHTML = '';
-
-        // 显示无限模式控制
-        videoDetailInfo.innerHTML = `
-            <div class="infinite-controls">
-                <span class="infinite-progress"><i class="fas fa-infinity"></i> ${index + 1} / ${this.infiniteQueue.length}</span>
-                <button class="btn btn-secondary btn-lg" id="infinitePrev" ${index === 0 ? 'disabled' : ''}>
-                    <i class="fas fa-step-backward"></i> 上一个
-                </button>
-                <button class="btn btn-secondary btn-lg" id="infiniteNext">
-                    下一个 <i class="fas fa-step-forward"></i>
-                </button>
-            </div>
-        `;
-
-        DOMHelper.show(modal);
-
-        // 绑定控制按钮
-        const prevBtn = videoDetailInfo.querySelector('#infinitePrev');
-        const nextBtn = videoDetailInfo.querySelector('#infiniteNext');
-        if (prevBtn) {
-            DOMHelper.on(prevBtn, 'click', () => this.playInfiniteVideo(index - 1));
-        }
-        if (nextBtn) {
-            DOMHelper.on(nextBtn, 'click', () => this.playInfiniteVideo(index + 1));
-        }
-
-        try {
-            this.showLoading();
-            // episode.url 是视频链接，直接解析
-            const parseResult = await this.api.parseVideo(episode.url, this.infiniteVideo.source);
-            const results = parseResult.results || [];
-
-            if (results && results.length > 0) {
-                videoPlayer.innerHTML = '';
-                await this.playerManager.initPlayer(videoPlayer, {
-                    title: `${this.infiniteVideo.title} - ${episode.title || `第${index + 1}个`}`,
-                    url: episode.url,
-                    source: this.infiniteVideo.source,
-                    thumbnail: episode.thumbnail || this.infiniteVideo.thumbnail
-                }, {
-                    isInfinite: true,
-                    onEnded: () => this.handleInfiniteEnded(),
-                    onPrev: () => this.playInfiniteVideo(index - 1),
-                    onNext: () => this.playInfiniteVideo(index + 1)
-                });
-                this.playerManager.setQualities(results);
-                this.renderQualitySelection(results);
-            } else {
-                videoPlayer.innerHTML = '<div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #666;">无法获取播放链接</div>';
-            }
-        } catch (error) {
-            console.error('播放无限视频失败:', error);
-            videoPlayer.innerHTML = '<div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #666;">播放失败</div>';
-        } finally {
-            this.hideLoading();
+        if (success) {
+            const prevBtn = DOMHelper.$('#infinitePrev');
+            const nextBtn = DOMHelper.$('#infiniteNext');
+            if (prevBtn) DOMHelper.on(prevBtn, 'click', () => this.playInfiniteVideo(index - 1));
+            if (nextBtn) DOMHelper.on(nextBtn, 'click', () => this.playInfiniteVideo(index + 1));
         }
     }
 
@@ -1252,7 +1263,7 @@ class VideoManager {
         
         try {
             this.showLoading();
-            const detail = await this.api.getSeriesDetail(seriesVideo.id);
+            const detail = await this.api.getSeriesDetail(seriesVideo.id, seriesVideo.url);
             
             if (!detail || !detail.episodes || detail.episodes.length === 0) {
                 videoPlayer.innerHTML = '<div class="loading-placeholder"><i class="fas fa-exclamation-circle"></i><span>暂无剧集信息</span></div>';
@@ -1266,25 +1277,25 @@ class VideoManager {
             // 渲染系列信息（左侧）
             const thumbnailUrl = seriesVideo.thumbnail ? 
                 this.api.getImageProxyUrl(seriesVideo.thumbnail, seriesVideo.source) : 
-                this.getDefaultThumbnail();
+                Utils.getDefaultThumbnail();
             
             videoDetailInfo.innerHTML = `
                 <div class="series-detail-card">
                     <div class="series-poster">
-                        <img src="${thumbnailUrl}" alt="${detail.title}" onerror="this.src='${this.getDefaultThumbnail()}'">
+                        <img src="${thumbnailUrl}" alt="${detail.title}" onerror="this.src='${Utils.getDefaultThumbnail()}'">
                     </div>
                     <div class="series-info-content">
                         <h3 class="series-title">${detail.title}</h3>
                         ${detail.originalTitle ? `<p class="series-original-title">${detail.originalTitle}</p>` : ''}
                         <div class="series-meta-tags">
-                            ${detail.type ? `<span class="meta-tag type-tag"><i class="fas fa-film"></i> ${this.getTypeText(detail.type)}</span>` : ''}
-                            ${detail.status ? `<span class="meta-tag status-tag ${detail.status}"><i class="fas fa-circle"></i> ${this.getStatusText(detail.status)}</span>` : ''}
+                            ${detail.type ? `<span class="meta-tag type-tag"><i class="fas fa-film"></i> ${Utils.getTypeText(detail.type)}</span>` : ''}
+                            ${detail.status ? `<span class="meta-tag status-tag ${detail.status}"><i class="fas fa-circle"></i> ${Utils.getStatusText(detail.status)}</span>` : ''}
                             ${detail.year ? `<span class="meta-tag"><i class="fas fa-calendar"></i> ${detail.year}</span>` : ''}
                             ${detail.rating ? `<span class="meta-tag rating-tag"><i class="fas fa-star"></i> ${detail.rating}</span>` : ''}
                         </div>
                         <div class="series-stats">
                             <span><i class="fas fa-list-ol"></i> 共 ${detail.totalEpisodes} 集</span>
-                            ${detail.views ? `<span><i class="fas fa-eye"></i> ${this.formatViews(detail.views)}</span>` : ''}
+                            ${detail.views ? `<span><i class="fas fa-eye"></i> ${Utils.formatViews(detail.views)}</span>` : ''}
                         </div>
                         ${detail.tags && detail.tags.length > 0 ? `
                         <div class="series-tags">
@@ -1547,65 +1558,83 @@ class VideoManager {
     
     /**
      * 创建系列视频下载任务
-     * @param {string} title - 下载标题
-     * @param {string} m3u8Url - M3U8链接
-     * @param {string} referer - 来源URL
      */
     async createSeriesDownload(title, m3u8Url, referer) {
+        const result = await this.createDownload(title, m3u8Url, referer);
+        if (result.task) {
+            await this.api.startDownload(result.task.id);
+        }
+        return result;
+    }
+    
+
+    
+    /**
+     * 通用的视频播放初始化
+     * @param {Object} params - 播放参数
+     * @param {string} params.title - 视频标题
+     * @param {string} params.url - 视频URL
+     * @param {string} params.source - 视频源
+     * @param {string} [params.thumbnail] - 缩略图
+     * @param {Function} params.parseVideoFn - 解析视频的异步函数
+     * @param {Function} params.renderControlsFn - 渲染控制按钮的函数
+     * @param {Object} [params.playerOptions] - 播放器选项
+     * @param {string} [params.loadingText='正在加载...'] - 加载提示文字
+     * @returns {Promise<boolean>} - 是否成功播放
+     */
+    async initVideoPlayback(params) {
+        const { title, url, source, thumbnail, parseVideoFn, renderControlsFn, playerOptions = {}, loadingText = '正在加载...' } = params;
+        
+        const modal = DOMHelper.$('#videoModal');
+        const modalTitle = DOMHelper.$('#modalTitle');
+        const videoPlayer = DOMHelper.$('#videoPlayer');
+        const videoDetailInfo = DOMHelper.$('#videoDetailInfo');
+        const qualitySelection = DOMHelper.$('#qualitySelection');
+        
+        if (!modal || !videoPlayer) return false;
+        
+        modalTitle.textContent = title;
+        videoPlayer.innerHTML = `<div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #666;">${loadingText}</div>`;
+        videoDetailInfo.innerHTML = '';
+        qualitySelection.innerHTML = '';
+        
+        DOMHelper.show(modal);
+        
         try {
-            const result = await this.api.createDownload(title, m3u8Url, undefined, referer);
-            if (result.task) {
-                await this.api.startDownload(result.task.id);
-                return result;
+            this.showLoading();
+            const results = await parseVideoFn();
+            
+            if (results && results.length > 0) {
+                videoPlayer.innerHTML = '';
+                
+                await this.playerManager.initPlayer(videoPlayer, {
+                    title,
+                    url,
+                    source,
+                    thumbnail: thumbnail || ''
+                }, playerOptions);
+                
+                this.playerManager.setQualities(results);
+                this.renderQualitySelection(results);
+                
+                if (renderControlsFn) {
+                    videoDetailInfo.innerHTML = renderControlsFn();
+                }
+                
+                return true;
             } else {
-                throw new Error('创建下载任务失败');
+                videoPlayer.innerHTML = '<div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #666;">无法获取播放链接</div>';
+                return false;
             }
         } catch (error) {
-            console.error('Create series download error:', error);
-            throw error;
+            console.error('视频播放初始化失败:', error);
+            videoPlayer.innerHTML = '<div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #666;">加载失败</div>';
+            return false;
+        } finally {
+            this.hideLoading();
         }
     }
-    
-    /**
-     * 获取类型文本
-     */
-    getTypeText(type) {
-        const typeMap = {
-            'anime': '动漫',
-            'drama': '剧集',
-            'movie': '电影',
-            'variety': '综艺',
-            'documentary': '纪录片',
-            'other': '其他'
-        };
-        return typeMap[type] || type;
-    }
-    
-    /**
-     * 获取状态文本
-     */
-    getStatusText(status) {
-        const statusMap = {
-            'ongoing': '连载中',
-            'completed': '已完结',
-            'upcoming': '即将上映',
-            'hiatus': '暂停更新'
-        };
-        return statusMap[status] || status;
-    }
-    
-    /**
-     * 格式化观看数
-     */
-    formatViews(views) {
-        if (views >= 100000000) {
-            return (views / 100000000).toFixed(1) + '亿';
-        } else if (views >= 10000) {
-            return (views / 10000).toFixed(1) + '万';
-        }
-        return views.toString();
-    }
-    
+
     /**
      * 播放剧集
      * @param {VideoItem} seriesVideo - 系列视频信息
@@ -1619,84 +1648,41 @@ class VideoManager {
             return;
         }
         
-        // 保存当前播放的系列和剧集信息
         this.currentSeriesVideo = seriesVideo;
         this.currentSeriesId = seriesVideo.id;
         this.currentEpisodeId = episode.id;
         
-        // 显示播放器界面
-        const videoPlayer = DOMHelper.$('#videoPlayer');
-        const videoDetailInfo = DOMHelper.$('#videoDetailInfo');
-        const qualitySelection = DOMHelper.$('#qualitySelection');
-        const modalTitle = DOMHelper.$('#modalTitle');
+        const success = await this.initVideoPlayback({
+            title: `${seriesVideo.title} - ${episode.title}`,
+            url: episode.url,
+            source: seriesVideo.source,
+            thumbnail: seriesVideo.thumbnail,
+            parseVideoFn: async () => {
+                const parseResult = await this.api.parseVideo(episode.url, seriesVideo.source);
+                return parseResult.results || [];
+            },
+            renderControlsFn: () => `
+                <button class="btn btn-secondary" id="backToEpisodesBtn">
+                    <i class="fas fa-list"></i> 返回选集
+                </button>
+            `,
+            playerOptions: {
+                seriesId: seriesVideo.id,
+                episodeId: episode.id,
+                startTime: startTime,
+                episodes: this.currentEpisodes,
+                onClose: () => this.backToEpisodes(),
+                onEpisodeChange: (ep, index) => this.handleEpisodeChange(ep, index)
+            },
+            loadingText: '正在加载播放链接...'
+        });
         
-        if (!videoPlayer) return;
-        
-        modalTitle.textContent = `${seriesVideo.title} - ${episode.title}`;
-        videoPlayer.innerHTML = '<div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #666;">正在加载播放链接...</div>';
-        videoDetailInfo.innerHTML = '';
-        qualitySelection.innerHTML = '';
-        
-        try {
-            this.showLoading();
-            
-            // 解析剧集链接
-            const parseResult = await this.api.parseVideo(episode.url, seriesVideo.source);
-            const results = parseResult.results || [];
-            
-            if (results && results.length > 0) {
-                // 清空播放器容器
-                videoPlayer.innerHTML = '';
-                
-                // 初始化播放器，传入剧集列表和回调
-                await this.playerManager.initPlayer(videoPlayer, {
-                    ...seriesVideo,
-                    title: `${seriesVideo.title} - ${episode.title}`,
-                    url: episode.url
-                }, {
-                    seriesId: seriesVideo.id,
-                    episodeId: episode.id,
-                    startTime: startTime,
-                    episodes: this.currentEpisodes,
-                    onClose: () => this.backToEpisodes(),
-                    onEpisodeChange: (ep, index) => this.handleEpisodeChange(ep, index)
-                });
-                
-                this.playerManager.setQualities(results);
-                
-                // 渲染画质选择
-                this.renderQualitySelection(results);
-                
-                // 显示返回选集按钮
-                videoDetailInfo.innerHTML = `
-                    <button class="btn btn-secondary" id="backToEpisodesBtn">
-                        <i class="fas fa-list"></i> 返回选集
-                    </button>
-                `;
-                
-                const backBtn = videoDetailInfo.querySelector('#backToEpisodesBtn');
-                if (backBtn) {
-                    DOMHelper.on(backBtn, 'click', () => {
-                        this.backToEpisodes();
-                    });
-                }
-            } else {
-                videoPlayer.innerHTML = '<div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #666;">无法获取播放链接</div>';
+        if (success) {
+            const backBtn = DOMHelper.$('#backToEpisodesBtn');
+            if (backBtn) {
+                DOMHelper.on(backBtn, 'click', () => this.backToEpisodes());
             }
-        } catch (error) {
-            console.error('加载剧集失败:', error);
-            videoPlayer.innerHTML = '<div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #666;">加载失败</div>';
-        } finally {
-            this.hideLoading();
         }
-    }
-    
-    /**
-     * 获取默认缩略图
-     * @returns {string}
-     */
-    getDefaultThumbnail() {
-        return '/default.webp';
     }
     
     /**
@@ -1704,92 +1690,55 @@ class VideoManager {
      * @param {VideoItem} video
      */
     async showVideoModal(video) {
-        const modal = DOMHelper.$('#videoModal');
-        const modalTitle = DOMHelper.$('#modalTitle');
-        const videoPlayer = DOMHelper.$('#videoPlayer');
-        const videoDetailInfo = DOMHelper.$('#videoDetailInfo');
-        const qualitySelection = DOMHelper.$('#qualitySelection');
         const downloadBtn = DOMHelper.$('#downloadVideoBtn');
         
-        if (!modal || !modalTitle || !videoPlayer || !videoDetailInfo || !qualitySelection) {
-            this.notifications.error('模态框元素未找到');
-            return;
-        }
-        
-        // 清理系列视频状态，确保这是普通视频播放
+        // 清理系列视频状态
         this.playerManager.destroy();
         this.currentSeriesVideo = null;
         this.currentEpisodes = [];
         
-        modalTitle.textContent = video.title;
+        const success = await this.initVideoPlayback({
+            title: video.title,
+            url: video.url,
+            source: video.source,
+            thumbnail: video.thumbnail,
+            parseVideoFn: async () => {
+                const parseResult = await this.api.parseVideo(video.url, video.source);
+                return parseResult.results || [];
+            },
+            renderControlsFn: () => `
+                <div class="video-info-item">
+                    <span class="video-info-label">标题:</span>
+                    <span class="video-info-value">${video.title}</span>
+                </div>
+                <div class="video-info-item">
+                    <span class="video-info-label">时长:</span>
+                    <span class="video-info-value">${video.duration || '未知'}</span>
+                </div>
+                <div class="video-info-item">
+                    <span class="video-info-label">来源:</span>
+                    <span class="video-info-value">${video.source}</span>
+                </div>
+                <div class="video-info-item">
+                    <span class="video-info-label">链接:</span>
+                    <span class="video-info-value" style="word-break: break-all;">${video.url}</span>
+                </div>
+            `,
+            loadingText: '正在解析视频...'
+        });
         
-        // 显示视频基本信息
-        videoDetailInfo.innerHTML = `
-            <div class="video-info-item">
-                <span class="video-info-label">标题:</span>
-                <span class="video-info-value">${video.title}</span>
-            </div>
-            <div class="video-info-item">
-                <span class="video-info-label">时长:</span>
-                <span class="video-info-value">${video.duration || '未知'}</span>
-            </div>
-            <div class="video-info-item">
-                <span class="video-info-label">来源:</span>
-                <span class="video-info-value">${video.source}</span>
-            </div>
-            <div class="video-info-item">
-                <span class="video-info-label">链接:</span>
-                <span class="video-info-value" style="word-break: break-all;">${video.url}</span>
-            </div>
-        `;
-        
-        // 清空质量选择和播放器
-        qualitySelection.innerHTML = '';
-        videoPlayer.innerHTML = '<div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #666;">正在解析视频...</div>';
-        
-        DOMHelper.show(modal);
-        
-        // 解析视频链接
-        try {
-            this.showLoading();
-            const parseResult = await this.api.parseVideo(video.url, video.source);
+        if (success && downloadBtn) {
+            const newDownloadBtn = downloadBtn.cloneNode(true);
+            downloadBtn.parentNode.replaceChild(newDownloadBtn, downloadBtn);
             
-            // 根据实际返回的数据结构处理
-            const results = parseResult.results || [];
-            
-            if (results && results.length > 0) {
-                // 渲染质量选择
-                this.renderQualitySelection(results);
-                
-                // 初始化播放器
-                await this.playerManager.initPlayer(videoPlayer, video);
-                this.playerManager.setQualities(results);
-                
-                // 绑定下载按钮
-                if (downloadBtn) {
-                    // 移除之前的事件监听器
-                    const newDownloadBtn = downloadBtn.cloneNode(true);
-                    downloadBtn.parentNode.replaceChild(newDownloadBtn, downloadBtn);
-                    
-                    DOMHelper.on(newDownloadBtn, 'click', () => {
-                        const selectedQuality = this.getSelectedQuality();
-                        if (selectedQuality) {
-                            this.downloadVideo(video.title, selectedQuality.url);
-                        } else {
-                            this.notifications.warning('请选择视频质量');
-                        }
-                    });
+            DOMHelper.on(newDownloadBtn, 'click', () => {
+                const selectedQuality = this.getSelectedQuality();
+                if (selectedQuality) {
+                    this.downloadVideo(video.title, selectedQuality.url);
+                } else {
+                    this.notifications.warning('请选择视频质量');
                 }
-            } else {
-                videoPlayer.innerHTML = '<div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #666;">无法获取视频播放链接</div>';
-                this.notifications.error('无法解析视频');
-            }
-        } catch (error) {
-            console.error('Parse video error:', error);
-            videoPlayer.innerHTML = '<div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #666;">解析视频失败</div>';
-            this.notifications.error(`解析视频失败: ${error.message}`);
-        } finally {
-            this.hideLoading();
+            });
         }
     }
     
@@ -1800,6 +1749,13 @@ class VideoManager {
     renderQualitySelection(qualities) {
         const qualitySelection = DOMHelper.$('#qualitySelection');
         if (!qualitySelection) return;
+
+        if (qualities.length == 0) {
+            qualitySelection.hidden = true;
+            return;
+        } else {
+            qualitySelection.hidden = false;
+        }
         
         qualitySelection.innerHTML = `
             <h4>选择画质</h4>
@@ -1927,15 +1883,11 @@ class VideoManager {
      * 加载下载列表
      */
     async loadDownloads() {
-        try {
+        await this.withLoading(async () => {
             const data = await this.api.getDownloads();
-            // 修复：使用正确的属性名tasks而不是downloads（适配后端返回格式）
             this.renderDownloadList(data.tasks || []);
             this.updateDownloadBadge();
-        } catch (error) {
-            this.notifications.error('加载下载列表失败');
-            console.error('Failed to load downloads:', error);
-        }
+        }, '加载下载列表失败', false);
     }
     
     /**
@@ -1978,7 +1930,7 @@ class VideoManager {
                     <span>${progress.toFixed(2)}%</span>
                 </div>
                 <div class="download-status">
-                    ${this.getStatusText(download.status)} 
+                    ${this.getDownloadStatusText(download.status)} 
                     ${download.speed ? `- ${download.speed}` : ''}
                 </div>
             </div>
@@ -2025,11 +1977,11 @@ class VideoManager {
     }
     
     /**
-     * 获取状态文本
+     * 获取下载状态文本
      * @param {string} status
      * @returns {string}
      */
-    getStatusText(status) {
+    getDownloadStatusText(status) {
         const statusMap = {
             'created': '已创建',
             'pending': '等待中',
@@ -2071,60 +2023,69 @@ class VideoManager {
     }
     
     /**
+     * 执行下载操作并处理通用逻辑
+     * @param {Function} apiFn - API调用函数
+     * @param {string} successMsg - 成功消息
+     * @param {string} errorMsg - 错误消息
+     * @param {boolean} [reloadList=true] - 是否刷新列表
+     * @param {boolean} [logError=true] - 是否记录错误日志
+     */
+    async executeDownloadAction(apiFn, successMsg, errorMsg, reloadList = true, logError = true) {
+        try {
+            const result = await apiFn();
+            if (successMsg) this.notifications.success(successMsg);
+            if (reloadList) await this.loadDownloads();
+            return result;
+        } catch (error) {
+            if (logError) console.error(`${errorMsg}:`, error);
+            this.notifications.error(errorMsg);
+            throw error;
+        }
+    }
+
+    /**
      * 开始下载
      * @param {string} id
      */
     async startDownload(id) {
-        try {
-            await this.api.startDownload(id);
-            this.notifications.success('下载已开始');
-            await this.loadDownloads();
-        } catch (error) {
-            this.notifications.error('开始下载失败');
-            console.error('Start download error:', error);
-        }
+        await this.executeDownloadAction(
+            () => this.api.startDownload(id),
+            '下载已开始',
+            '开始下载失败'
+        );
     }
-    
+
     /**
      * 取消下载
      * @param {string} id
      */
     async cancelDownload(id) {
-        try {
-            await this.api.cancelDownload(id);
-            this.notifications.success('下载已取消');
-            await this.loadDownloads();
-        } catch (error) {
-            this.notifications.error('取消下载失败');
-        }
+        await this.executeDownloadAction(
+            () => this.api.cancelDownload(id),
+            '下载已取消',
+            '取消下载失败'
+        );
     }
-    
+
     /**
      * 重试下载
      * @param {string} id
      */
     async retryDownload(id) {
-        try {
-            // 由于后端可能没有实现重试API，我们改为重新开始下载
-            await this.api.startDownload(id);
-            this.notifications.success('下载已重新开始');
-            await this.loadDownloads();
-        } catch (error) {
-            this.notifications.error('重试下载失败');
-            console.error('Retry download error:', error);
-        }
+        await this.executeDownloadAction(
+            () => this.api.startDownload(id),
+            '下载已重新开始',
+            '重试下载失败'
+        );
     }
-    
+
     /**
      * 清除已完成的下载
      */
     async clearCompletedDownloads() {
         try {
-            // 调用API清除后端已完成下载
             const result = await this.api.clearCompletedDownloads();
-            
             if (result.success) {
-                // 重新加载下载列表以更新前端
                 await this.loadDownloads();
                 this.notifications.success('已清除所有完成的下载任务');
             } else {
@@ -2248,7 +2209,7 @@ class VideoManager {
         }
         
         if (pageJumpBtn) {
-            pageJumpBtn.addEventListener('click', () => {
+            DOMHelper.on(pageJumpBtn, 'click', () => {
                 const page = parseInt(pageJumpInput.value);
                 if (page >= 1 && page <= totalPages) {
                     this.goToPage(type, page);
@@ -2426,15 +2387,15 @@ let app = null;
 // 初始化应用
 document.addEventListener('DOMContentLoaded', () => {
     app = new VideoManager();
-      // 添加管理按钮事件监听器
-      const manageSourceBtn = DOMHelper.$('#manageSourceBtn');
-      if (manageSourceBtn) {
-        manageSourceBtn.addEventListener('click', () => {
+    // 添加管理按钮事件监听器
+    const manageSourceBtn = DOMHelper.$('#manageSourceBtn');
+    if (manageSourceBtn) {
+        DOMHelper.on(manageSourceBtn, 'click', () => {
             if (app) {
                 app.switchPage('sources');
             }
         });
-      }
+    }
 });
 
 // 全局错误处理

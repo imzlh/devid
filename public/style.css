@@ -278,14 +278,14 @@ body {
     margin: 0 auto;
 }
 
-@media (max-width: 480px) {
+@media (max-width: 600px) {
     .content-area {
         padding: 16px;
         padding-bottom: 90px;
     }
 }
 
-@media (max-width: 300px) {
+@media (max-width: 400px) {
     .content-area {
         padding: 12px;
         padding-bottom: 90px;
@@ -305,6 +305,7 @@ body {
     justify-content: space-between;
     align-items: center;
     margin-bottom: 30px;
+    margin-left: 10px;
     flex-wrap: wrap;
     gap: 20px;
 }
@@ -346,14 +347,14 @@ body {
     gap: 25px;
 }
 
-@media (max-width: 480px) {
+@media (max-width: 600px) {
     .video-grid {
         grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
         gap: 15px;
     }
 }
 
-@media (max-width: 300px) {
+@media (max-width: 400px) {
     .video-grid {
         grid-template-columns: repeat(2, 1fr);
         gap: 10px;
@@ -382,13 +383,13 @@ body {
     background-color: var(--bg-tertiary);
 }
 
-@media (max-width: 480px) {
+@media (max-width: 600px) {
     .video-thumbnail {
         height: 140px;
     }
 }
 
-@media (max-width: 300px) {
+@media (max-width: 400px) {
     .video-thumbnail {
         height: 110px;
     }
@@ -438,7 +439,7 @@ body {
     font-size: 13px;
 }
 
-@media (max-width: 300px) {
+@media (max-width: 400px) {
     .video-info {
         padding: 8px;
     }
@@ -621,9 +622,10 @@ body {
 .download-actions {
     display: flex;
     gap: 10px;
+    flex-shrink: 0;
 }
 
-@media (max-width: 480px) {
+@media (max-width: 600px) {
     .download-item {
         padding: 15px;
         gap: 15px;
@@ -644,7 +646,7 @@ body {
     }
 }
 
-@media (max-width: 300px) {
+@media (max-width: 400px) {
     .download-item {
         padding: 12px;
         gap: 12px;
@@ -666,7 +668,7 @@ body {
     gap: 20px;
 }
 
-@media (max-width: 480px) {
+@media (max-width: 600px) {
     .sources-list {
         grid-template-columns: 1fr;
         gap: 15px;
@@ -1006,7 +1008,7 @@ body {
     word-break: break-word;
 }
 
-@media (max-width: 480px) {
+@media (max-width: 600px) {
     .notifications {
         top: 10px;
         right: 10px;
@@ -1064,7 +1066,7 @@ body {
     }
 }
 
-@media (max-width: 480px) {
+@media (max-width: 600px) {
     /* 分页控件移动端优化 */
     .pagination {
         gap: 10px;
@@ -1170,7 +1172,7 @@ body {
     }
 }
 
-@media (max-width: 300px) {
+@media (max-width: 400px) {
     .video-player {
         height: 50vw;
         max-height: 200px;
@@ -1227,7 +1229,7 @@ body {
     }
 
     .search-box {
-        max-width: 100%;
+        width: 100%;
     }
 
     .search-box input {
@@ -1242,9 +1244,7 @@ body {
     }
 
     .header-actions {
-        width: 100%;
-        justify-content: space-between;
-        margin-top: 10px;
+        display: none;
     }
 
     .source-info {
@@ -1359,7 +1359,6 @@ body {
     }
 
     .search-container {
-        flex-direction: column;
         gap: 15px;
     }
 
@@ -1375,7 +1374,7 @@ body {
     }
 }
 
-@media (max-width: 300px) {
+@media (max-width: 400px) {
     .video-grid {
         grid-template-columns: repeat(2, 1fr);
     }
@@ -1612,7 +1611,7 @@ body {
     align-content: start;
 }
 
-@media (max-width: 480px) {
+@media (max-width: 600px) {
     .episodes-grid {
         grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
         gap: 8px;
@@ -1620,7 +1619,7 @@ body {
     }
 }
 
-@media (max-width: 300px) {
+@media (max-width: 400px) {
     .episodes-grid {
         grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
         gap: 6px;
@@ -1643,7 +1642,7 @@ body {
     min-height: 80px;
 }
 
-@media (max-width: 480px) {
+@media (max-width: 600px) {
     .episode-card {
         padding: 12px 8px;
         min-height: 70px;
@@ -1665,7 +1664,7 @@ body {
     }
 }
 
-@media (max-width: 300px) {
+@media (max-width: 400px) {
     .episode-card {
         padding: 10px 6px;
         min-height: 60px;
@@ -1814,7 +1813,7 @@ body {
     accent-color: var(--accent-color);
 }
 
-@media (max-width: 480px) {
+@media (max-width: 600px) {
     .episode-checkbox {
         top: 6px;
         left: 6px;
@@ -1826,7 +1825,7 @@ body {
     }
 }
 
-@media (max-width: 300px) {
+@media (max-width: 400px) {
     .episode-checkbox {
         top: 4px;
         left: 4px;
@@ -1870,7 +1869,7 @@ body {
     font-size: 13px;
 }
 
-@media (max-width: 480px) {
+@media (max-width: 600px) {
     .episodes-header {
         flex-direction: column;
         align-items: flex-start;
@@ -1894,7 +1893,7 @@ body {
     }
 }
 
-@media (max-width: 300px) {
+@media (max-width: 400px) {
     .episodes-header {
         padding: 10px 12px;
     }
@@ -1914,7 +1913,7 @@ body {
 }
 
 /* 响应式 - 系列详情 */
-@media (max-width: 480px) {
+@media (max-width: 600px) {
     .series-detail-card {
         flex-direction: column;
         gap: 15px;
@@ -1940,7 +1939,7 @@ body {
     }
 }
 
-@media (max-width: 300px) {
+@media (max-width: 400px) {
     .series-detail-card {
         gap: 12px;
     }
@@ -2047,7 +2046,9 @@ body {
 .context-menu-item i {
     width: 16px;
     text-align: center;
-}/* 最近观看区域 */
+}
+
+/* 最近观看区域 */
 .recent-watch-section {
     margin-bottom: 30px;
 }
@@ -2056,9 +2057,9 @@ body {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 20px;
+    margin: 10px 0 20px 10px;
     padding-bottom: 10px;
-    border-bottom: 2px solid var(--border-color);
+    /* border-bottom: 2px solid var(--border-color); */
 }
 
 .section-header h3 {
@@ -2097,14 +2098,14 @@ body {
     position: relative;
 }
 
-@media (max-width: 480px) {
+@media (max-width: 600px) {
     .recent-watch-grid {
         grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
         gap: 15px;
     }
 }
 
-@media (max-width: 300px) {
+@media (max-width: 400px) {
     .recent-watch-grid {
         grid-template-columns: repeat(2, 1fr);
         gap: 10px;
@@ -2141,38 +2142,8 @@ body {
     margin-left: 4px;
 }
 
-/* 分隔线 */
-.section-divider {
-    display: flex;
-    align-items: center;
-    margin: 30px 0;
-    gap: 15px;
-}
-
-.section-divider::before,
-.section-divider::after {
-    content: '';
-    flex: 1;
-    height: 1px;
-    background: linear-gradient(90deg, transparent, var(--border-color), transparent);
-}
-
-.section-divider h3 {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    font-size: 20px;
-    color: var(--text-primary);
-    margin: 0;
-    white-space: nowrap;
-}
-
-.section-divider h3 i {
-    color: var(--accent-color);
-}
-
 /* 响应式 - 最近观看 */
-@media (max-width: 480px) {
+@media (max-width: 600px) {
     .recent-watch-grid {
         grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
         gap: 15px;
@@ -2185,17 +2156,13 @@ body {
     }
 }
 
-@media (max-width: 300px) {
+@media (max-width: 400px) {
     .recent-watch-grid {
         grid-template-columns: repeat(2, 1fr);
         gap: 10px;
     }
     
     .section-header h3 {
-        font-size: 16px;
-    }
-    
-    .section-divider h3 {
         font-size: 16px;
     }
 }
@@ -2230,7 +2197,7 @@ body {
 
 
 /* 按钮触摸优化 */
-@media (hover: none) and (pointer: coarse) {
+/* @media (hover: none) and (pointer: coarse) {
     .btn {
         min-height: 48px;
         padding: 12px 20px;
@@ -2274,8 +2241,7 @@ body {
         height: 36px;
         font-size: 14px;
     }
-}
-
+} */
 
 /* 滑动关闭动画 */
 .modal.swipe-close {
@@ -2300,7 +2266,7 @@ body {
 
 
 /* 额外的移动端优化 */
-@media (max-width: 480px) {
+@media (max-width: 600px) {
     /* 下载列表优化 */
     .download-list {
         gap: 12px;
@@ -2484,4 +2450,28 @@ body {
 @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }
+}
+
+/* 移动端滑动隐藏导航栏 */
+@media (max-width: 600px) {
+    .top-header {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        z-index: 99;
+        transition: transform 0.3s ease;
+    }
+
+    .top-header.nav-hidden {
+        transform: translateY(-100%);
+    }
+
+    .sidebar.nav-hidden {
+        transform: translateY(100%);
+    }
+
+    .main-content {
+        padding-top: 70px;
+    }
 }

@@ -244,8 +244,7 @@ export default class GG51VideoSource extends BaseVideoSource {
         return [{
             url: m3u8Url,
             quality: '高清',
-            resolution: '1920x1080',
-            bandwidth: 2000000
+            resolution: '1920x1080'
         }];
     }
 

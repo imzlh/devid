@@ -236,13 +236,15 @@ export class VideoSourceManager {
 
     /**
      * 获取系列剧集列表
+     * @param seriesId - 系列ID
+     * @param url - 可选的系列页面URL，如果提供则优先使用
      */
-    async getSeries(seriesId: string): Promise<ISeriesResult | null> {
+    async getSeries(seriesId: string, url?: string): Promise<ISeriesResult | null> {
         const active = this.getActiveSource();
         if (!active) return null;
 
         try {
-            const list = await active.getSeries(seriesId);
+            const list = await active.getSeries(seriesId, url);
             return list ?? null;
         } catch (error) {
             logError(`获取系列 ${seriesId} 失败:`, error);
