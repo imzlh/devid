@@ -7,10 +7,10 @@ import S_AKI from './sources/aki.ts';
 import { BaseVideoSource } from "./sources/index.ts";
 
 export const SOURCES: { new(): BaseVideoSource }[] = [
-    S_AKI
-    // S_AGEFANS,
-    // S_GG51,
-    // S_KPDZ,
-    // S_17C,
-    // S_HZW
+    S_AGEFANS,
+    S_AKI,
+    S_GG51,
+    S_KPDZ,
+    S_17C,
+    S_HZW
 ];

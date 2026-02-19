@@ -66,7 +66,7 @@ export class WebSocketRPCServer {
         };
 
         ws.onerror = (error) => {
-            logError("WebSocket 错误:", error);
+            logError("WebSocket 错误:", (error as ErrorEvent).message);
         };
     }
 
