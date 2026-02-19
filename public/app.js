@@ -271,6 +271,45 @@ class VideoManager {
                 });
             }
         });
+
+        // 验证码请求推送
+        this.wsClient.onPush('captcha:required', (data) => {
+            console.log('收到验证码请求:', data);
+            this.handleCaptchaRequired(data);
+        });
+    }
+
+    /**
+     * 处理验证码请求
+     * @param {Object} data - 验证码请求数据
+     */
+    handleCaptchaRequired(data) {
+        const { requestId, imageUrl, prompt } = data;
+
+        // 构建验证码页面 URL
+        const captchaUrl = `/captcha.html?requestId=${encodeURIComponent(requestId)}&imageUrl=${encodeURIComponent(imageUrl)}&prompt=${encodeURIComponent(prompt || '请输入验证码')}`;
+
+        // 使用 iframe 显示验证码
+        const overlay = DOMHelper.$('#captchaOverlay');
+        const iframe = DOMHelper.$('#captchaIframe');
+
+        if (overlay && iframe) {
+            iframe.src = captchaUrl;
+            DOMHelper.show(overlay);
+        }
+    }
+
+    /**
+     * 关闭验证码 iframe
+     */
+    closeCaptchaOverlay() {
+        const overlay = DOMHelper.$('#captchaOverlay');
+        const iframe = DOMHelper.$('#captchaIframe');
+
+        if (overlay && iframe) {
+            iframe.src = 'about:blank';
+            DOMHelper.hide(overlay);
+        }
     }
 
     /**
@@ -293,6 +332,13 @@ class VideoManager {
      * 绑定事件监听器
      */
     bindEvents() {
+        // 监听 iframe 发来的消息
+        DOMHelper.on(window, 'message', (e) => {
+            if (e.data && e.data.type === 'captcha:close') {
+                this.closeCaptchaOverlay();
+            }
+        });
+
         // 导航菜单
         const navItems = DOMHelper.$$('.nav-item');
         navItems.forEach(item => {
@@ -304,7 +350,7 @@ class VideoManager {
                 }
             });
         });
-        
+
         // 搜索功能
         const searchBtn = DOMHelper.$('#searchBtn');
         const searchInput = DOMHelper.$('#searchInput');
@@ -1277,6 +1323,9 @@ class VideoManager {
                     <button class="btn btn-secondary btn-lg" id="infiniteNext">
                         下一个 <i class="fas fa-step-forward"></i>
                     </button>
+                    <button class="btn btn-primary btn-lg" id="infiniteDownload">
+                        <i class="fas fa-download"></i> 下载
+                    </button>
                 </div>
             `,
             playerOptions: {
@@ -1291,8 +1340,19 @@ class VideoManager {
         if (success) {
             const prevBtn = DOMHelper.$('#infinitePrev');
             const nextBtn = DOMHelper.$('#infiniteNext');
+            const downloadBtn = DOMHelper.$('#infiniteDownload');
             if (prevBtn) DOMHelper.on(prevBtn, 'click', () => this.playInfiniteVideo(index - 1));
             if (nextBtn) DOMHelper.on(nextBtn, 'click', () => this.playInfiniteVideo(index + 1));
+            if (downloadBtn) {
+                DOMHelper.on(downloadBtn, 'click', () => {
+                    const selectedQuality = this.getSelectedQuality();
+                    if (selectedQuality) {
+                        this.downloadVideo(displayTitle, selectedQuality.url);
+                    } else {
+                        this.notifications.warning('请选择视频质量');
+                    }
+                });
+            }
         }
     }
 
@@ -2338,8 +2398,8 @@ class VideoManager {
         if (this.downloadInterval) {
             clearInterval(this.downloadInterval);
         }
-        
-        // 每5s更新一次下载状态
+
+        // 每2s更新一次下载状态
         this.downloadInterval = setInterval(async () => {
             if (this.currentPage === 'downloads') {
                 await this.loadDownloads();
@@ -2347,7 +2407,7 @@ class VideoManager {
                 // 只更新徽章，不重新加载整个列表
                 await this.updateDownloadBadge();
             }
-        }, 5000);
+        }, 2000);
     }
     
     /**

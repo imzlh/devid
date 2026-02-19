@@ -2475,3 +2475,38 @@ body {
         padding-top: 70px;
     }
 }
+
+/* 验证码 iframe 容器样式 */
+.captcha-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+}
+
+.captcha-overlay.hidden {
+    display: none;
+}
+
+.captcha-modal {
+    background: rgb(68, 66, 66);
+    border-radius: 16px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    overflow: hidden;
+    max-width: 500px;
+    width: 90vw;
+    height: 90vh;
+    max-height: 500px;
+}
+
+.captcha-modal iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+}

@@ -58,7 +58,6 @@ class WebSocketRPCClient {
                 this.ws = new WebSocket(url);
 
                 this.ws.onopen = () => {
-                    console.log('WebSocket 已连接');
                     this.connected = true;
                     this.reconnectAttempts = 0;
                     resolve();
@@ -69,7 +68,6 @@ class WebSocketRPCClient {
                 };
 
                 this.ws.onclose = () => {
-                    console.log('WebSocket 已断开');
                     this.connected = false;
                     this.attemptReconnect();
                 };
@@ -110,11 +108,9 @@ class WebSocketRPCClient {
     handleMessage(data) {
         try {
             const message = JSON.parse(data);
-            console.log('WebSocket收到消息:', message);
 
             // 检查是否是 RPC 响应
             if (message.id && this.pendingCalls.has(message.id)) {
-                console.log('处理RPC响应:', message.id);
                 const { resolve, reject } = this.pendingCalls.get(message.id);
                 this.pendingCalls.delete(message.id);
 
@@ -128,7 +124,6 @@ class WebSocketRPCClient {
 
             // 检查是否是推送消息
             if (message.method && this.pushHandlers.has(message.method)) {
-                console.log('处理推送消息:', message.method);
                 const handler = this.pushHandlers.get(message.method);
                 handler(message.data);
             }
@@ -313,6 +308,26 @@ class WebSocketRPCClient {
      */
     clearCompletedDownloads() {
         return this.call('downloads.clearCompleted');
+    }
+
+    /**
+     * 提交验证码
+     * @param {string} requestId - 验证码请求ID
+     * @param {string} answer - 用户输入的验证码
+     * @returns {Promise<unknown>}
+     */
+    submitCaptcha(requestId, answer) {
+        return this.call('captcha.submit', [requestId, answer]);
+    }
+
+    /**
+     * 取消验证码请求
+     * @param {string} requestId - 验证码请求ID
+     * @param {string} [reason='用户取消'] - 取消原因
+     * @returns {Promise<unknown>}
+     */
+    cancelCaptcha(requestId, reason = '用户取消') {
+        return this.call('captcha.cancel', [requestId, reason]);
     }
 }
 

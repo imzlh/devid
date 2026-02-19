@@ -4,9 +4,11 @@ import S_AGEFANS from './sources/agefans.ts';
 import S_17C from './sources/17c.ts';
 import S_HZW from './sources/hzw.ts';
 import S_AKI from './sources/aki.ts';
+import S_AOWU from './sources/aowu.ts';
 import { BaseVideoSource } from "./sources/index.ts";
 
 export const SOURCES: { new(): BaseVideoSource }[] = [
+    S_AOWU,
     S_AGEFANS,
     S_AKI,
     S_GG51,

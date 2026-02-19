@@ -455,6 +455,7 @@ app.get("/api/proxy/:name", async (c) => {
         c.header("Access-Control-Allow-Origin", "*");
         c.header("Access-Control-Allow-Headers", "Range, Content-Type");
         c.header("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges");
+        c.header("Cache-Control", "max-age=3600");
 
         for (const [key, value] of Object.entries(headers)) {
             c.header(key, value);
@@ -504,10 +505,76 @@ app.get("/api/image-proxy", async (c) => {
         const imageBuffer = new Uint8Array(await proxiedImage.arrayBuffer());
         c.header("Content-Type", proxiedImage.headers.get("content-type") || "image/jpeg");
         c.header("Access-Control-Allow-Origin", "*");
+        c.header("Cache-Control", "max-age=3600");
         return c.body(imageBuffer);
     } catch (error) {
         logError("图片代理失败:", error);
         return c.json({ error: "图片代理失败" }, 500);
+    }
+});
+
+// ==================== 验证码 API ====================
+
+// 提交验证码答案
+app.post("/api/captcha/submit", async (c) => {
+    try {
+        const body = await c.req.json();
+        const { requestId, answer } = body;
+
+        if (!validateRequiredString(requestId, "requestId")) {
+            logWarn("提交验证码失败: 缺少或无效的requestId");
+            return c.json({ error: "缺少或无效的requestId" }, 400);
+        }
+
+        if (!validateRequiredString(answer, "answer")) {
+            logWarn("提交验证码失败: 缺少或无效的answer");
+            return c.json({ error: "缺少或无效的answer" }, 400);
+        }
+
+        logDebug(`提交验证码答案: requestId=${requestId}, answer=${answer}`);
+
+        const { resolveCaptcha } = await import("./utils/captcha.ts");
+        const success = resolveCaptcha(requestId, answer);
+
+        if (success) {
+            logInfo(`验证码答案已提交: ${requestId}`);
+        } else {
+            logWarn(`验证码答案提交失败: ${requestId}`);
+        }
+
+        return c.json({ success });
+    } catch (error) {
+        logError("提交验证码失败:", error);
+        return c.json({ error: "提交验证码失败" }, 500);
+    }
+});
+
+// 取消验证码请求
+app.post("/api/captcha/cancel", async (c) => {
+    try {
+        const body = await c.req.json();
+        const { requestId, reason } = body;
+
+        if (!validateRequiredString(requestId, "requestId")) {
+            logWarn("取消验证码失败: 缺少或无效的requestId");
+            return c.json({ error: "缺少或无效的requestId" }, 400);
+        }
+
+        logDebug(`取消验证码请求: requestId=${requestId}, reason=${reason || "用户取消"}`);
+
+        const { cancelCaptcha } = await import("./utils/captcha.ts");
+        const success = cancelCaptcha(requestId, reason || "用户取消");
+
+        if (success) {
+            logInfo(`验证码请求已取消: ${requestId}`);
+        } else {
+            logWarn(`验证码请求取消失败: ${requestId}`);
+        }
+
+        return c.json({ success });
+    } catch (error) {
+        logError("取消验证码失败:", error);
+        return c.json({ error: "取消验证码失败" }, 500);
     }
 });
 
@@ -926,6 +993,24 @@ rpcServer.register("downloads.clearCompleted", async (...params: unknown[]) => {
         clearedCount: result.count,
         deletedFiles: result.deletedFiles
     };
+});
+
+// ==================== 验证码 RPC 方法 ====================
+
+rpcServer.register("captcha.submit", async (...params: unknown[]) => {
+    const requestId = params[0] as string;
+    const answer = params[1] as string;
+    const { resolveCaptcha } = await import("./utils/captcha.ts");
+    const success = resolveCaptcha(requestId, answer);
+    return { success };
+});
+
+rpcServer.register("captcha.cancel", async (...params: unknown[]) => {
+    const requestId = params[0] as string;
+    const reason = (params[1] as string) || "用户取消";
+    const { cancelCaptcha } = await import("./utils/captcha.ts");
+    const success = cancelCaptcha(requestId, reason);
+    return { success };
 });
 
 rpcServer.register("health.get", () => {

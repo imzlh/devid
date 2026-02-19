@@ -71,26 +71,22 @@ export interface ISeriesDetail {
     aliases?: string[];
     description?: string;
     thumbnail: string;
-    cover?: string;
-    banner?: string;
     type?: ISeriesType;
     status?: ISeriesStatus;
     year?: number;
-    country?: string;
-    genres?: string[];
     tags?: string[];
     rating?: number;
     views?: number;
     totalEpisodes: number;
     episodes?: IEpisode[];  // 可选，getSeriesDetail 不返回，getSeriesList 返回
     source: string;
-    url: string;
     currentEpisode?: number;
 }
 
 // 系列剧集列表结果
 export interface ISeriesResult extends ISeriesDetail {
     seriesId: string;
+    url: string;
 }
 
 // 视频源健康状态

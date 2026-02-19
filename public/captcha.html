@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>验证码 - VDown</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500&display=swap');
+
+        :root {
+            --bg: #0e0e10;
+            --surface: #18181b;
+            --border: #2a2a2f;
+            --border-focus: #6c63ff;
+            --text: #e4e4e7;
+            --text-muted: #71717a;
+            --accent: #6c63ff;
+            --accent-dim: rgba(108, 99, 255, 0.15);
+            --success: #22c55e;
+            --error: #ef4444;
+            --radius: 6px;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'DM Sans', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+        }
+
+        .card {
+            width: 100%;
+            max-width: 360px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 28px 24px 24px;
+            animation: fadeUp 0.25s ease both;
+        }
+
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(8px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .shield {
+            width: 28px; height: 28px;
+            border: 1.5px solid var(--accent);
+            border-radius: 4px;
+            display: grid;
+            place-items: center;
+            flex-shrink: 0;
+        }
+
+        .shield svg { width: 14px; height: 14px; fill: var(--accent); }
+
+        .header-text h1 {
+            font-size: 15px;
+            font-weight: 500;
+            color: var(--text);
+            line-height: 1.2;
+        }
+
+        .header-text p {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
+        .img-wrap {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 3/1;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+            margin-bottom: 12px;
+            background: #111;
+        }
+
+        .img-wrap img {
+            width: 100%; height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+
+        .img-placeholder {
+            position: absolute; inset: 0;
+            display: flex; align-items: center; justify-content: center;
+            gap: 8px;
+            font-size: 12px;
+            color: var(--text-muted);
+            font-family: 'DM Mono', monospace;
+        }
+
+        .img-placeholder.hidden { display: none; }
+
+        .spinner {
+            width: 14px; height: 14px;
+            border: 1.5px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .prompt {
+            font-size: 12px;
+            font-family: 'DM Mono', monospace;
+            color: var(--text-muted);
+            margin-bottom: 14px;
+            padding: 8px 10px;
+            background: rgba(255,255,255,0.03);
+            border-left: 2px solid var(--accent);
+            border-radius: 0 var(--radius) var(--radius) 0;
+        }
+
+        .input-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 14px;
+        }
+
+        input {
+            flex: 1;
+            padding: 10px 12px;
+            font-family: 'DM Mono', monospace;
+            font-size: 16px;
+            letter-spacing: 6px;
+            text-align: center;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            color: var(--text);
+            outline: none;
+            transition: border-color 0.15s;
+        }
+
+        input:focus { border-color: var(--accent); }
+        input::placeholder { letter-spacing: normal; font-size: 12px; color: var(--text-muted); }
+
+        .icon-btn {
+            width: 42px; height: 42px;
+            display: grid; place-items: center;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            cursor: pointer;
+            color: var(--text-muted);
+            transition: color 0.15s, border-color 0.15s;
+            flex-shrink: 0;
+        }
+
+        .icon-btn:hover { color: var(--text); border-color: #3f3f46; }
+        .icon-btn svg { width: 15px; height: 15px; }
+
+        .btn-primary {
+            width: 100%;
+            padding: 11px;
+            font-family: 'DM Sans', sans-serif;
+            font-size: 14px;
+            font-weight: 500;
+            color: #fff;
+            background: var(--accent);
+            border: none;
+            border-radius: var(--radius);
+            cursor: pointer;
+            transition: opacity 0.15s, transform 0.1s;
+        }
+
+        .btn-primary:hover { opacity: 0.88; }
+        .btn-primary:active { transform: scale(0.99); }
+        .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        .btn-ghost {
+            width: 100%;
+            padding: 9px;
+            font-size: 12px;
+            color: var(--text-muted);
+            background: none;
+            border: none;
+            cursor: pointer;
+            margin-top: 6px;
+            transition: color 0.15s;
+        }
+
+        .btn-ghost:hover { color: var(--text); }
+
+        .status {
+            display: none;
+            margin-top: 12px;
+            padding: 9px 12px;
+            border-radius: var(--radius);
+            font-size: 12px;
+            font-family: 'DM Mono', monospace;
+        }
+
+        .status.success {
+            display: block;
+            background: rgba(34,197,94,0.1);
+            border: 1px solid rgba(34,197,94,0.25);
+            color: var(--success);
+        }
+
+        .status.error {
+            display: block;
+            background: rgba(239,68,68,0.1);
+            border: 1px solid rgba(239,68,68,0.25);
+            color: var(--error);
+        }
+    </style>
+</head>
+<body>
+<div class="card">
+    <div class="header">
+        <div class="shield">
+            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12 2L4 5v6c0 5.25 3.75 10.15 8 11.35C16.25 21.15 20 16.25 20 11V5l-8-3z"/>
+            </svg>
+        </div>
+        <div class="header-text">
+            <h1>人机验证</h1>
+            <p>请完成验证以继续访问</p>
+        </div>
+    </div>
+
+    <div class="img-wrap" id="imgWrap">
+        <div class="img-placeholder" id="imgPlaceholder">
+            <div class="spinner"></div>
+            <span>加载中</span>
+        </div>
+    </div>
+
+    <div class="prompt" id="captchaPrompt">请输入图中显示的验证码</div>
+
+    <div class="input-row">
+        <input type="text" id="captchaInput" placeholder="验证码" maxlength="10" autocomplete="off" spellcheck="false">
+        <button class="icon-btn" id="refreshBtn" title="刷新">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+                <path d="M3 3v5h5"/>
+            </svg>
+        </button>
+    </div>
+
+    <button class="btn-primary" id="submitBtn">提交验证</button>
+    <button class="btn-ghost" id="cancelBtn">取消</button>
+
+    <div class="status" id="statusMessage"></div>
+</div>
+
+<script>
+    const params = new URLSearchParams(location.search);
+    const requestId = params.get('requestId');
+    const imageUrl  = params.get('imageUrl');
+    const prompt    = params.get('prompt');
+
+    const $ = id => document.getElementById(id);
+    const imgWrap     = $('imgWrap');
+    const placeholder = $('imgPlaceholder');
+    const promptEl    = $('captchaPrompt');
+    const input       = $('captchaInput');
+    const submitBtn   = $('submitBtn');
+    const refreshBtn  = $('refreshBtn');
+    const cancelBtn   = $('cancelBtn');
+    const statusEl    = $('statusMessage');
+
+    function showStatus(type, msg) {
+        statusEl.className = 'status ' + type;
+        statusEl.textContent = msg;
+    }
+
+    function loadImage(url) {
+        placeholder.classList.remove('hidden');
+        imgWrap.querySelectorAll('img').forEach(el => el.remove());
+        const img = new Image();
+        img.onload  = () => { placeholder.classList.add('hidden'); imgWrap.appendChild(img); };
+        img.onerror = () => { placeholder.innerHTML = '<span style="color:#ef4444">图片加载失败</span>'; };
+        img.src = url;
+        img.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block;';
+    }
+
+    function closeIframe() {
+        if (window.parent !== window) {
+            window.parent.postMessage({ type: 'captcha:close' }, '*');
+        } else {
+            window.close();
+        }
+    }
+
+    async function submitCaptcha() {
+        const answer = input.value.trim();
+        if (!answer) { showStatus('error', '请输入验证码'); input.focus(); return; }
+        submitBtn.disabled = true;
+        submitBtn.textContent = '提交中...';
+        try {
+            const res = await fetch('/api/captcha/submit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ requestId, answer })
+            });
+            const r = await res.json();
+            if (r.success) {
+                showStatus('success', '验证成功！');
+                setTimeout(() => closeIframe(), 800);
+            } else {
+                showStatus('error', r.error || '提交失败，请重试');
+                submitBtn.disabled = false;
+                submitBtn.textContent = '提交验证';
+            }
+        } catch (e) {
+            showStatus('error', '提交失败: ' + e.message);
+            submitBtn.disabled = false;
+            submitBtn.textContent = '提交验证';
+        }
+    }
+
+    async function cancelCaptcha() {
+        try {
+            await fetch('/api/captcha/cancel', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ requestId })
+            });
+        } catch {}
+        closeIframe();
+    }
+
+    function init() {
+        if (!requestId) { showStatus('error', '缺少请求 ID'); return; }
+        if (prompt) promptEl.textContent = decodeURIComponent(prompt);
+        if (imageUrl) loadImage(decodeURIComponent(imageUrl));
+        submitBtn.addEventListener('click', submitCaptcha);
+        cancelBtn.addEventListener('click', cancelCaptcha);
+        refreshBtn.addEventListener('click', () => {
+            if (imageUrl) loadImage(decodeURIComponent(imageUrl) + '&t=' + Date.now());
+        });
+        input.addEventListener('keypress', e => { if (e.key === 'Enter') submitCaptcha(); });
+        input.focus();
+    }
+
+    init();
+</script>
+</body>
+</html>
