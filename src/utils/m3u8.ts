@@ -1,5 +1,5 @@
 import { logDebug, logError, logInfo } from "./logger.ts";
-import type { IM3U8Manifest, IM3U8Variant, IM3U8Segment, IM3U8MediaGroup, IM3U8Result } from "../types/index.ts";
+import type { IM3U8Manifest, IM3U8Variant, IM3U8Segment, IM3U8MediaGroup, IVideoURL } from "../types/index.ts";
 import { fetch2 } from "./fetch.ts";
 
 export class URLResolver {
@@ -580,7 +580,7 @@ export class M3U8Service {
     /**
    * 向后兼容：fetchAndParseM3U8（解析主播放列表）
    */
-    static async fetchAndParseM3U8(url: string): Promise<IM3U8Result[]> {
+    static async fetchAndParseM3U8(url: string): Promise<IVideoURL[]> {
         try {
             logInfo(`Fetching master playlist: ${url}`);
 

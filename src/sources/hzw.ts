@@ -1,7 +1,7 @@
 import assert from "node:assert";
 import { getDocument, fetch2 } from "../utils/fetch.ts";
 import { BaseVideoSource } from "./index.ts";
-import { IImageData, IM3U8Result, IVideoList, IVideoItem, ISeriesResult } from "../types/index.ts";
+import { IImageData, IVideoURL, IVideoList, IVideoItem, ISeriesResult } from "../types/index.ts";
 import { URLSearchParams } from "node:url";
 import { encodeHex } from "@std/encoding";
 import { md5 } from "@takker/md5";
@@ -463,7 +463,7 @@ export default class HZWSource extends BaseVideoSource {
     }
 
     // deno-lint-ignore require-await
-    override async parseVideoUrl(url: string): Promise<IM3U8Result[]> {
+    override async parseVideoUrl(url: string): Promise<IVideoURL[]> {
         // url is already m3u8
         return [
             {

@@ -1,3 +1,10 @@
+// enum URLProxy
+const URLProxy = {
+    NONE: 0,
+    REMOTE: 2,
+    LOCAL: 1
+};
+
 /**
  * 播放进度管理类
  * 支持：进度跟踪、最近观看记录、系列关联
@@ -529,24 +536,30 @@ class VideoPlayerManager {
 
         // 根据skipProxy选项决定是否使用代理
         let videoUrl;
-        if (quality.skipProxy) {
+        if (!quality.proxy) {
             // 跳过代理，直接使用原始URL
             videoUrl = quality.url;
         } else {
             // 使用代理
             // 优先使用quality.referrer，如果没有则使用当前视频URL
             const referer = quality.referrer || this.currentVideo.url;
-            const refererParam = `&referer=${encodeURIComponent(referer)}`;
+            let url = new URL(location);
             if (quality.format === 'h5') {
                 // H5: 使用预配后缀名
                 let extname = new URL(quality.url).pathname.split('.').pop() || 'mp4';
                 if (extname.includes('/') || extname.length >= 5)
                     extname = 'mp4';
-                videoUrl = `/api/proxy/video.${extname}?url=${encodeURIComponent(quality.url)}&source=${this.currentVideo.source}${refererParam}`;
+                url.pathname = `/api/proxy/video.${extname}`;
             } else {
                 // M3U8使用代理
-                videoUrl = `/api/proxy/video.m3u8?url=${encodeURIComponent(quality.url)}&source=${this.currentVideo.source}${refererParam}`;
+                url.pathname = `/api/proxy/video.m3u8`;
             }
+            url.searchParams.set('url', quality.url);
+            url.searchParams.set('source', this.currentVideo.source);
+            url.searchParams.set('referer', referer);
+            if (quality.proxy == URLProxy.REMOTE)
+                url.searchParams.set('proxy', 'remote');
+            videoUrl = url.toString();
         }
 
         try {

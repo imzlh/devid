@@ -1,7 +1,10 @@
 // utils/fetch.ts
 import { DOMParser } from "dom";
 import type { Document } from "dom";
-import { logError, logWarn } from "./logger.ts";
+import { logDebug, logError, logWarn } from "./logger.ts";
+import config from "../config/index.ts";
+import assert from "node:assert";
+import { encodeBase64 } from "@std/encoding";
 
 // 配置常量
 const DEFAULT_USER_AGENT = "Mozilla/5.0 (Linux; Android 13; Pixel 5 Build/TQ3A.230901.001) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Mobile Safari/537.36";
@@ -40,7 +43,7 @@ interface FetchResponse extends Response {
  */
 export async function getDocument(
     url: string | URL,
-    options: FetchOptions = {}
+    options: FetchOptions & { useProxy?: boolean } = {}
 ): Promise<Document> {
     if (typeof options.referrer == 'string' && options.headers) {
         // @ts-ignore - set referer
@@ -72,6 +75,18 @@ export async function getDocument(
     return parser.parseFromString(html, "text/html");
 }
 
+export async function useProxy(url: string | URL, options: FetchOptions = {}) {
+    assert(config.get().proxy.gateway, 'Proxy gateway is not configured');
+    const headers = new Headers(options.headers);
+    headers.set('X-Proxy-Destination', encodeBase64(String(url)));
+    const _options = {
+        ...options,
+        headers
+    };
+    logDebug(`Proxy request to ${url} with options ${JSON.stringify(_options)}`);
+    return fetch(config.get().proxy.gateway, _options);
+}
+
 /**
  * 增强版 fetch，支持自动重定向和 cookie 处理
  * @param url - 目标 URL
@@ -80,7 +95,7 @@ export async function getDocument(
  */
 export async function fetch2(
     url: string | URL,
-    options: FetchOptions & { noRetry?: boolean } = {}
+    options: FetchOptions & { noRetry?: boolean, useProxy?: boolean } = {}
 ): Promise<FetchResponse> {
     const {
         maxRedirects = MAX_REDIRECTS,
@@ -122,7 +137,7 @@ export async function fetch2(
             // 发送请求
             let response;
             try{
-                response = await fetch(currentUrl, {
+                response = await (options.useProxy ? useProxy : fetch)(currentUrl, {
                     ...fetchOptions,
                     headers,
                     signal: controller.signal,
@@ -181,7 +196,7 @@ export async function fetch2(
             return enhancedResponse as FetchResponse;
         }
 
-        throw new Error(`Maximum redirects (${maxRedirects}) exceeded`);
+        throw new Error(`Maximum retry or redirect (${maxRedirects}) exceeded`);
     } finally {
         clearTimeout(timeoutId);
     }
@@ -389,7 +404,7 @@ export async function getCookies(domain: string): Promise<Cookie[]> {
  */
 export async function getImage(
     url: string,
-    options: RequestInit = {}
+    options: RequestInit & { useProxy?: boolean } = {}
 ): Promise<import("../sources/index.ts").ImageData> {
     try {
         const response = await fetch2(url, options);

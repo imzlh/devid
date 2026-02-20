@@ -1,5 +1,5 @@
 import { Document } from "dom";
-import { IM3U8Result, IVideoItem, IVideoList } from '../types/index.ts';
+import { IVideoURL, IVideoItem, IVideoList } from '../types/index.ts';
 import { fetch2, getDocument } from '../utils/fetch.ts';
 import { logError, logInfo, logWarn } from "../utils/logger.ts";
 import { BaseVideoSource, ImageData } from './index.ts';
@@ -278,7 +278,7 @@ export default class C17VideoSource extends BaseVideoSource {
     }
 
     // 解析视频链接获取 M3U8
-    async parseVideoUrl(url: string): Promise<IM3U8Result[]> {
+    async parseVideoUrl(url: string): Promise<IVideoURL[]> {
         const videoInfo = await this.getVideoInfo(url);
 
         return [{

@@ -20,6 +20,7 @@
   },
   "proxy": {
     "timeoutMs": 30000,
-    "maxRetries": 3
+    "maxRetries": 3,
+    "gateway": ""
   }
 }

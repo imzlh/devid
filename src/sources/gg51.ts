@@ -1,5 +1,5 @@
 import { BaseVideoSource, ImageData } from './index.ts';
-import { IVideoItem, IVideoList, IM3U8Result } from '../types/index.ts';
+import { IVideoItem, IVideoList, IVideoURL } from '../types/index.ts';
 import { fetch2, getImage as fetchImage, findAvailableFast, getDocument } from '../utils/fetch.ts';
 import { Document, DOMParser } from "dom";
 import { logError, logInfo } from "../utils/logger.ts";
@@ -227,7 +227,7 @@ export default class GG51VideoSource extends BaseVideoSource {
     }
 
     // 解析视频链接获取M3U8
-    async parseVideoUrl(url: string): Promise<IM3U8Result[]> {
+    async parseVideoUrl(url: string): Promise<IVideoURL[]> {
         const fullUrl = new URL(url, this.resolvedBaseUrl).href;
 
         // 解析重定向后的页面内容

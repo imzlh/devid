@@ -1,6 +1,6 @@
 import {
     IVideoList,
-    IM3U8Result, ISeriesResult
+    IVideoURL, ISeriesResult
 } from '../types/index.ts';
 import { getImage } from "../utils/fetch.ts";
 
@@ -58,7 +58,7 @@ export abstract class BaseVideoSource {
     abstract searchVideos(query: string, page?: number): Promise<IVideoList>;
 
     // 解析视频链接获取M3U8
-    abstract parseVideoUrl(url: string): Promise<IM3U8Result[]>;
+    abstract parseVideoUrl(url: string): Promise<IVideoURL[]>;
 
     // 获取图片数据
     getImage(originalUrl: string): Promise<ImageData> {

@@ -305,7 +305,8 @@ async function handleProxyRequest(
     referer?: string,
     task_id?: string,
     range?: string,
-    body_type?: string
+    body_type?: string,
+    proxy?: string
 ): Promise<ProxyResponse> {
     try {
         const originalUrl = decodeURIComponent(encodedUrl);
@@ -322,6 +323,7 @@ async function handleProxyRequest(
         const response = await fetch2(originalUrl, {
             headers: requestHeaders,
             timeout: 300000,
+            useProxy: proxy == 'remote'
         });
 
         if (!response.ok && response.status !== 206) {
@@ -354,7 +356,8 @@ async function handleProxyRequest(
 
             const rewritten = M3U8Service.serializeManifest(manifest, {
                 taskId: task_id,
-                referer
+                referer,
+                proxy
             });
 
             if (task_id) {
@@ -369,7 +372,7 @@ async function handleProxyRequest(
             };
         }
 
-        if (body_type == "ts") {
+        if (body_type == "ts" && (parseInt(contentLength ?? '0') < 2 * 1024 || task_id)) {
             const data = new Uint8Array(await response.arrayBuffer());
             const fixed = M3U8Service.fixTSStream(data);
 
@@ -447,7 +450,8 @@ app.get("/api/proxy/:name", async (c) => {
             referer ?? undefined,
             trace_id ?? undefined,
             rangeHeader ?? undefined,
-            c.req.query("type") ?? undefined
+            c.req.query("type") ?? undefined,
+            c.req.query("proxy") ?? undefined
         );
 
         logDebug(`代理请求成功，内容类型: ${contentType}, 状态: ${status}`);
@@ -509,7 +513,7 @@ app.get("/api/image-proxy", async (c) => {
         return c.body(imageBuffer);
     } catch (error) {
         logError("图片代理失败:", error);
-        return c.json({ error: "图片代理失败" }, 500);
+        return c.json({ error: error instanceof Error ? error.message : error }, 500);
     }
 });
 

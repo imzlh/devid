@@ -184,7 +184,7 @@ export class MyVideoSource extends BaseVideoSource {
     // - url: 视频URL
     // - quality: 清晰度
     // - referrer: 用于前端?referer参数
-    // - skipProxy: 是否跳过代理，直接使用原始URL播放
+    // - proxy: 是否使用代理
   }
 
   async getSeries(seriesId: string, url?: string): Promise<ISeriesResult> {

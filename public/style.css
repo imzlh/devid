@@ -241,6 +241,10 @@ body {
 .current-source {
     color: var(--text-secondary);
     font-size: 14px;
+    max-width: 8em;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
 }
 
 .header-actions {

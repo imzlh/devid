@@ -39,6 +39,7 @@ export interface DownloadConfig {
 export interface ProxyConfig {
     timeoutMs: number;
     maxRetries: number;
+    gateway: string;
 }
 
 export interface AppConfig {
@@ -75,7 +76,8 @@ const DEFAULT_CONFIG: AppConfig = {
     },
     proxy: {
         timeoutMs: 30000,
-        maxRetries: 3
+        maxRetries: 3,
+        gateway: ''
     }
 };
 

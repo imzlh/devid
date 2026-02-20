@@ -3,7 +3,7 @@
  * 完整实现：跳板跳转 → CONFIG解密 → API调用
  */
 import { BaseVideoSource, ImageData } from './index.ts';
-import { IVideoItem, IVideoList, IM3U8Result } from '../types/index.ts';
+import { IVideoItem, IVideoList, IVideoURL } from '../types/index.ts';
 import { fetch2 } from '../utils/fetch.ts';
 import { DOMParser } from "dom";
 import { logInfo } from "../utils/logger.ts";
@@ -296,7 +296,7 @@ export default class SMWeiaonaVideoSource extends BaseVideoSource {
     }
 
     // 解析视频播放URL（M3U8）
-    async parseVideoUrl(fullUrl: string): Promise<IM3U8Result[]> {
+    async parseVideoUrl(fullUrl: string): Promise<IVideoURL[]> {
         assert(this.config, '视频源未初始化');
         logInfo(`[${this.sourceId}] 解析视频: ${fullUrl}`);
 

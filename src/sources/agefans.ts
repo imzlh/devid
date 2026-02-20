@@ -1,7 +1,7 @@
 import assert from "node:assert";
 import { getReadme } from "../utils/github.ts";
 import { BaseVideoSource } from "./index.ts";
-import { IEpisode, IM3U8Result, ISeriesDetail, ISeriesResult, IVideoItem, IVideoList } from "../types/index.ts";
+import { IEpisode, IVideoURL, ISeriesDetail, ISeriesResult, IVideoItem, IVideoList, URLProxy } from "../types/index.ts";
 import { Document, Element } from "dom";
 import { getDocument } from "../utils/fetch.ts";
 import { md5 } from '@takker/md5';
@@ -399,7 +399,7 @@ export default class AGEFans extends BaseVideoSource {
         return this.decryptVideoData(target, page);
     }
 
-    override async parseVideoUrl(url: string): Promise<IM3U8Result[]> {
+    override async parseVideoUrl(url: string): Promise<IVideoURL[]> {
         // 拼接完整 URL
         const fullUrl = new URL(url, this.baseUrl).href;
         const page = await getDocument(fullUrl);
@@ -410,7 +410,7 @@ export default class AGEFans extends BaseVideoSource {
                 quality: "1080p",
                 url: decodeURIComponent(res.url),
                 format: res.type == 'dplayer' ? 'm3u8' : 'h5',
-                skipProxy: true
+                proxy: URLProxy.SERVER
             }
         ];
     }

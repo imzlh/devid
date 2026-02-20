@@ -1,12 +1,12 @@
 import assert from "node:assert";
-import { IM3U8Result, IVideoList, IVideoItem } from "../types/index.ts";
-import { getDocument } from "../utils/fetch.ts";
-import { BaseVideoSource } from "./index.ts";
+import { IVideoURL, IVideoList, IVideoItem, URLProxy } from "../types/index.ts";
+import { getDocument, getImage } from "../utils/fetch.ts";
+import { BaseVideoSource, ImageData } from "./index.ts";
 import { Document } from "dom";
 
 export default class HAnime extends BaseVideoSource {
     constructor() {
-        super("hanime", "HAnime", "https://hanime1.me");
+        super("hanime", "HAnime(强制使用代理)", "https://hanime1.me");
     }
 
     override async init(): Promise<void> {
@@ -40,7 +40,7 @@ export default class HAnime extends BaseVideoSource {
     }
 
     override async getHomeVideos(): Promise<IVideoList> {
-        const doc = await getDocument(new URL("/", this.baseUrl));
+        const doc = await getDocument(new URL("/", this.baseUrl), { useProxy: true });
         const videos = this.parsePage(doc);
         return {
             videos: videos,
@@ -51,7 +51,8 @@ export default class HAnime extends BaseVideoSource {
 
     override async searchVideos(query: string, page?: number): Promise<IVideoList> {
         const res = await getDocument(
-            new URL("/search?query=" + encodeURIComponent(query), this.baseUrl).href
+            new URL("/search?query=" + encodeURIComponent(query), this.baseUrl).href,
+            { useProxy: true }
         );
         const videos = this.parsePage(res);
         const indicator = res.querySelector(".skip-page-wrapper");
@@ -63,8 +64,8 @@ export default class HAnime extends BaseVideoSource {
         };
     }
 
-    override async parseVideoUrl(url: string): Promise<IM3U8Result[]> {
-        const doc = await getDocument(url);
+    override async parseVideoUrl(url: string): Promise<IVideoURL[]> {
+        const doc = await getDocument(url, { useProxy: true });
         const vid = doc.querySelector("video[poster]");
         assert(vid, "Video element not found");
 
@@ -72,7 +73,12 @@ export default class HAnime extends BaseVideoSource {
             .map(s => ({
                 quality: s.getAttribute("size") + 'p',
                 url: s.getAttribute("src")!,
-                format: 'h5'
+                format: 'h5',
+                proxy: URLProxy.REMOTE
             }));
+    }
+
+    override getImage(originalUrl: string): Promise<ImageData> {
+        return getImage(originalUrl, { useProxy: true });
     }
 }

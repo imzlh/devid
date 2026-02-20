@@ -2,6 +2,8 @@ import { IDownloadTask, IDownloadTaskPersisted } from '../types/index.ts';
 import { logError, logInfo, logDebug, logWarn } from "./logger.ts";
 import { SERVER_ADDR } from "../server.ts";
 import { getConfig } from "../config/index.ts";
+import { basename, join } from "node:path";
+import { mergeReadableStreams } from "@std/streams"
 
 // 清理间隔固定值
 const TASK_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;  // 5分钟
@@ -362,7 +364,6 @@ export class DownloadManager {
             const command = new Deno.Command('ffmpeg', {
                 args: [
                     '-hide_banner',           // 隐藏版本信息
-                    '-loglevel', 'error',     // 只显示错误
                     '-stats',                 // 显示进度统计
                     '-i', proxyUrl.toString(),
                     '-c', 'copy',             // 直接复制，不重新编码
@@ -395,14 +396,16 @@ export class DownloadManager {
             signal.addEventListener('abort', abortHandler, { once: true });
 
             // 等待 FFmpeg 完成
-            const output = await command.output();
-            
+            const logPath = join(getConfig().server.dataDir, basename(task.filePath) + '.log');
+            const file = await Deno.open(logPath, { write: true, create: true, read: false });
+            await mergeReadableStreams(command.stdout, command.stderr).pipeTo(file.writable);
+            const status = await command.status;
+
             // 清理监听器
             signal.removeEventListener('abort', abortHandler);
 
-            if (!output.success) {
-                const stderr = new TextDecoder().decode(output.stderr);
-                throw new Error(`FFmpeg 退出码 ${output.code}: ${stderr.slice(0, 500)}`);
+            if (!status.success) {
+                throw new Error(`FFmpeg 退出码 ${status.code}，详细日志见 ${logPath}`);
             }
 
             // 获取文件大小
@@ -413,6 +416,9 @@ export class DownloadManager {
             } catch {
                 // 忽略统计错误
             }
+
+            file.close();
+            await Deno.remove(logPath);
 
             return true;
         } catch (error) {

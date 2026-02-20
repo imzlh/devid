@@ -108,15 +108,21 @@ export interface ISource {
     health?: ISourceHealth;
 }
 
+export enum URLProxy {
+    DISABLE = 0,    // 不使用
+    SERVER,         // 本地服务器代理，适用于无GFW ban的情况
+    REMOTE          // 远程代理，适用于有GFW ban的情况
+}
+
 // M3U8解析结果
-export interface IM3U8Result {
+export interface IVideoURL {
     url: string;
     quality: string;
     resolution?: string;
     bandwidth?: number;
     format?: 'm3u8' | 'h5';  // 支持M3U8和MP4格式
     referrer?: string;  // 用于前端?referer参数
-    skipProxy?: boolean;  // 是否跳过代理，直接使用原始URL播放
+    proxy?: UseProxy;
 }
 
 // 下载任务

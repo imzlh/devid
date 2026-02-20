@@ -1,7 +1,7 @@
 import assert from "node:assert";
 import { fetch2, getDocument, getImage } from "../utils/fetch.ts";
 import { BaseVideoSource, ImageData } from "./index.ts";
-import { IVideoList, IVideoItem, IM3U8Result, ISeriesResult, IEpisode } from "../types/index.ts";
+import { IVideoList, IVideoItem, IVideoURL, ISeriesResult, IEpisode, URLProxy } from "../types/index.ts";
 import { captcha } from "../utils/captcha.ts";
 
 /**
@@ -152,7 +152,7 @@ export default class AkiAnimeAPI extends BaseVideoSource {
         };
     }
 
-    override async parseVideoUrl(url: string): Promise<IM3U8Result[]> {
+    override async parseVideoUrl(url: string): Promise<IVideoURL[]> {
         const doc = await getDocument(url);
         const scr = doc.getElementsByTagName('script').find(e => e.innerText.includes('player_aaaa'))?.textContent;
         assert(scr, `Failed to get video url from ${url}`);
@@ -161,7 +161,7 @@ export default class AkiAnimeAPI extends BaseVideoSource {
             quality: '1080p',
             url: info.url,
             format: 'h5',   // not sure, but seems to be h5
-            skipProxy: true
+            proxy: URLProxy.SERVER
         }];
     }
 
