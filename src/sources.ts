@@ -11,7 +11,7 @@ import S_1ANIME from './sources/1anime.ts';
 import { BaseVideoSource } from "./sources/index.ts";
 
 export const SOURCES: { new(): BaseVideoSource }[] = [
-    S_1ANIME
+    S_1ANIME,
     S_AGEFANS,
     S_AKI,
     S_AOWU,
