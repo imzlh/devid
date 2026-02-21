@@ -1466,9 +1466,6 @@ class VideoManager {
                             <button class="btn btn-small btn-primary" id="downloadSelectedEpisodes">
                                 <i class="fas fa-download"></i> 下载选中
                             </button>
-                            <button class="btn btn-small btn-primary" id="artFullScreen">
-                                <i class="fas fa-fullscreen"></i> 全屏
-                            </button>
                             <div class="episodes-count">共 ${detail.episodes.length} 集</div>
                         </div>
                     </div>
@@ -1539,12 +1536,6 @@ class VideoManager {
             const downloadBtn = videoPlayer.querySelector('#downloadSelectedEpisodes');
             if (downloadBtn) {
                 DOMHelper.on(downloadBtn, 'click', () => this.downloadSelectedEpisodes(seriesVideo));
-            }
-
-            // 绑定全屏
-            const fullscreenBtn = videoPlayer.querySelector('#artFullScreen');
-            if (fullscreenBtn) {
-                DOMHelper.on(fullscreenBtn, 'click', () => this.playerManager.player.fullscreen = true);
             }
         } catch (error) {
             console.error('加载系列详情失败:', error);
@@ -1802,8 +1793,11 @@ class VideoManager {
                 return parseResult.results || [];
             },
             renderControlsFn: () => `
-                <button class="btn btn-secondary" id="backToEpisodesBtn">
+                <button class="btn btn-primary" id="backToEpisodesBtn">
                     <i class="fas fa-list"></i> 返回选集
+                </button>
+                <button class="btn btn-secondary" id="artFullScreen">
+                    <i class="fas fa-expand"></i> 全屏
                 </button>
             `,
             playerOptions: {
@@ -1818,9 +1812,16 @@ class VideoManager {
         });
         
         if (success) {
+            // 绑定返回选集按钮
             const backBtn = DOMHelper.$('#backToEpisodesBtn');
             if (backBtn) {
                 DOMHelper.on(backBtn, 'click', () => this.backToEpisodes());
+            }
+            
+            // 绑定全屏
+            const fullscreenBtn = videoPlayer.querySelector('#artFullScreen');
+            if (fullscreenBtn) {
+                DOMHelper.on(fullscreenBtn, 'click', () => this.playerManager.player.fullscreen = true);
             }
         }
     }

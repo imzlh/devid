@@ -49,24 +49,6 @@ app.use("*", async (c, next) => {
     logDebug(`${c.req.method} ${c.req.url} - ${c.res.status} - ${ms}ms`);
 });
 
-// API超时中间件 - 30秒超时
-app.use("/api/*", async (c, next) => {
-    const API_TIMEOUT = 30000;
-    const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('API请求超时')), API_TIMEOUT);
-    });
-
-    try {
-        await Promise.race([next(), timeoutPromise]);
-    } catch (error) {
-        if (error instanceof Error && error.message === 'API请求超时') {
-            logWarn(`API请求超时: ${c.req.method} ${c.req.url}`);
-            return c.json({ error: '请求超时，请稍后重试' }, 504);
-        }
-        throw error;
-    }
-});
-
 // 静态文件服务 - /static/* 路径
 app.use("/static/*", serveStatic({ root: "./public" }));
 

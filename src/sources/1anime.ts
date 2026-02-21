@@ -1,8 +1,7 @@
 import assert from "node:assert";
-import { fetch2, getDocument, getImage } from "../utils/fetch.ts";
+import { getDocument, getImage } from "../utils/fetch.ts";
 import { BaseVideoSource, ImageData } from "./index.ts";
 import { IVideoList, IVideoItem, IVideoURL, ISeriesResult, IEpisode, URLProxy } from "../types/index.ts";
-import { captcha } from "../utils/captcha.ts";
 
 /**
  * var player_aaaa={"flag":"play","encrypt":0,"trysee":0,"points":0,"link":"\/bgmplay\/PEcDDE-1-1.html","link_next":"\/bgmplay\/PEcDDE-1-2.html","link_pre":"","vod_data":{"vod_name":"\u3010\u6211\u63a8\u7684\u5b69\u5b50\u3011 \u7b2c\u4e09\u5b63","vod_actor":"\u5e73\u5c71\u5bdb\u83dc","vod_director":"\u5e73\u7267\u5927\u8f85","vod_class":"\u756a\u52a8\u6f2b,\u65e5\u97e9\u52a8\u6f2b"},"url":"Doki-69741358ca4ebe01ed07a8d27c733c5db108cb2bc9a59c3d3ea655aa0ac56963500a9cd6227e36504a38f994050eeb80a1393b9a704053f450062c9ed8380706cb3db8f96815b214a22fc0ca851be93a","url_next":"Doki-69741358ca4ebe01ed07a8d27c733c5db108cb2bc9a59c3d3ea655aa0ac56963500a9cd6227e36504a38f994050eeb80a1393b9a704053f450062c9ed8380706046b8508d9c1cf10ab3600d5232ebf55","from":"YDY","server":"no","note":"","id":"PEcDDE","sid":1,"nid":1}
@@ -27,24 +26,24 @@ interface IPlayerInfo {
     nid: number;
 }
 
-export default class AowuAnime extends BaseVideoSource {
+export default class OneAnime extends BaseVideoSource {
     constructor() {
-        super('嗷呜动漫', 'aowu', 'https://www.aowu.tv', true);
+        super('1anime', '1Anime(爬虫需要代理)', 'https://1anime.me/', true);
     }
 
     override async init(): Promise<void> {
         // noop
-        // 这个源简单得要命，直接照搬aki的配置，API都没有
+        // 这个源简单得要命，直接照搬aowu的配置，API都没有
     }
 
     override async getHomeVideos(page?: number): Promise<IVideoList> {
-        const home = await getDocument(this.baseUrl);
+        const home = await getDocument(this.baseUrl, { useProxy: true });
         const vid: IVideoItem[] = [];
-        for (const el of home.querySelectorAll('.public-list-box')) {
-            const link = el.getElementsByTagName('a')?.[0];
-            const image = el.getElementsByTagName('img')?.[0];
-            if (!link || !image) continue;
-            const match = link.getAttribute('href')?.match(/\/moe-n\/([A-Za-z0-9]+)\/?/);
+        for (const el of home.querySelectorAll('div.module-item')) {
+            const link = el.querySelector('a[title]')!;
+            const image = el.querySelector('img[data-src]')!;
+            // href="/voddetail/8603.html"
+            const match = link.getAttribute('href')?.match(/\/voddetail\/([A-Za-z0-9]+)\.html/);
             if (!match) continue;
             vid.push({
                 thumbnail: new URL(image.getAttribute('data-src')!, this.baseUrl).href,
@@ -64,16 +63,15 @@ export default class AowuAnime extends BaseVideoSource {
 
     override async getSeries(seriesId: string, url?: string): Promise<ISeriesResult | null> {
         // 优先使用传入的URL，否则根据ID构造URL
-        const pageUrl = url ?? new URL(`/moe-n/${seriesId}/`, this.baseUrl).href;
-        const doc = await getDocument(pageUrl);
+        const pageUrl = url ?? new URL(`/voddetail/${seriesId}.html`, this.baseUrl).href;
+        const doc = await getDocument(pageUrl, { useProxy: true });
         const ser: IEpisode[] = [];
         let total = 0;
-        for (const group of doc.querySelectorAll('.anthology-list-play')) {
+        for (const group of doc.querySelectorAll('div.module-player-list')) {
             let ep = 1;
-            for (const el of group.children) {
-                const link = el.getElementsByTagName('a')?.[0]!;
-                // /play/ZKAAAK-1-1/
-                const match = link.getAttribute('href')?.match(/\/play\/([A-Za-z0-9]+-[0-9]+-[0-9]+)/);
+            for (const link of group.querySelectorAll('a[title]')) {
+                // href="/vodplay/8603-1-2.html"
+                const match = link.getAttribute('href')?.match(/\/vodplay\/([A-Za-z0-9]+-[0-9]+-[0-9]+)\.html/);
                 if (!match) continue;
                 ser.push({
                     url: new URL(link.getAttribute('href')!, this.baseUrl).href,
@@ -86,14 +84,12 @@ export default class AowuAnime extends BaseVideoSource {
             total = Math.max(total, ep - 1);
         }
 
-        const img = doc.querySelector('.detail-pic img');
-        const name = doc.querySelector('h3.slide-info-title');
+        const img = doc.querySelector('div.module-item-pic img');
+        const name = doc.querySelector('h1.page-title');
         const btn = doc.querySelector('.vod-detail-bnt a');
-        const desc = doc.querySelector('#height_limit');
-        const tags = doc.querySelectorAll('.detail-info > .slide-info:last-child > a');
-        const rate = doc.querySelector('.fraction');
+        const tags = doc.querySelectorAll('.tag-link > a[href]');
 
-        return {
+        const info: ISeriesResult = {
             thumbnail: new URL(img?.getAttribute('data-src')!, this.baseUrl).href,
             title: name?.textContent!,
             episodes: ser,
@@ -101,40 +97,70 @@ export default class AowuAnime extends BaseVideoSource {
             totalEpisodes: total,
             source: this.sourceId,
             id: seriesId,
-            description: desc?.textContent,
             url: new URL(btn?.getAttribute('href')!, this.baseUrl).href,
-            rating: parseFloat(rate?.textContent ?? '10'),
             tags: Array.from(tags).map(e => e.textContent!)
         };
+
+        for (const item of doc.querySelectorAll('.video-info-items')) {
+            const titleEl = item.querySelector('.video-info-itemtitle');
+            if (!titleEl) continue;
+            const title = titleEl.textContent?.replace(/[：:]$/, '').trim();
+            switch (title) {
+                case '剧情': {
+                    const contentEl = item.querySelector('.video-info-item');
+                    if (contentEl?.textContent) {
+                        info.description = contentEl.textContent.replace('展开', '').trim();
+                    }
+                    break;
+                }
+                case '备注': {
+                    const contentEl = item.querySelector('.video-info-item');
+                    if (contentEl?.textContent) {
+                        const text = contentEl.textContent.trim();
+                        if (text.includes('完结')) info.status = 'completed';
+                        else if (text.includes('连载')) info.status = 'ongoing';
+                        else if (text.includes('停更')) info.status = 'hiatus';
+                    }
+                    break;
+                }
+                case '评分': {
+                    const contentEl = item.querySelector('.video-info-item');
+                    if (contentEl?.textContent) {
+                        const match = contentEl.textContent.match(/(\d+\.?\d*)分/);
+                        if (match) info.rating = parseFloat(match[1]);
+                    }
+                    break;
+                }
+                case '上映': {
+                    const contentEl = item.querySelector('.video-info-item');
+                    if (contentEl?.textContent) {
+                        const match = contentEl.textContent.match(/(\d{4})/);
+                        if (match) info.year = parseInt(match[1]);
+                    }
+                    break;
+                }
+            }
+        }
+
+        return info;
     }
 
     override async searchVideos(query: string, page?: number): Promise<IVideoList> {
-        let doc = await getDocument(new URL(`/anime/vod/?wd=${query}&page=${page ?? 1}`, this.baseUrl));
+        const doc = await getDocument(
+            new URL(`/vodsearch/${encodeURIComponent(query)}----------${page}---.html`, this.baseUrl),
+            { useProxy: true }
+        );
         const res: IVideoItem[] = [];
+        for (const el of doc.querySelectorAll('.module-items > div.module-item')) {
+            const link = el.querySelector('a[title]');
+            const img = el.querySelector('.module-item-pic > img[data-src]');
 
-        // check verify
-        let verifyPrompt = '搜索需要验证码，请请输入验证码'
-        if (doc.querySelector('input[name="verify"]')) while(true) {
-            const res = await captcha({
-                imageUrl: new URL('/verify/index.html', this.baseUrl).href,
-                prompt: verifyPrompt,
-            });
-            const code = await (await fetch2(new URL('/index.php/ajax/verify_check?type=search&verify=' + res, this.baseUrl))).text();
-            if (code.length) verifyPrompt = '验证码错误，请重试';
-            else break;
-        }
-
-        for (const el of doc.querySelectorAll('.vod-detail')) {
-            const link = el.querySelector('a[target="_blank"]');
-            const namel = el.querySelector('.slide-info-title')
-            const img = el.querySelector('img.gen-movie-img');
-
-            if (!link || !namel || !img) continue;
-            const match = link.getAttribute('href')?.match(/\/play\/([A-Za-z0-9]+)\/?/);
+            if (!link || !img) continue;
+            const match = link.getAttribute('href')?.match(/\/bgmdetail\/([A-Za-z0-9]+)\.html/);
             if (!match) continue;
             res.push({
                 thumbnail: new URL(img.getAttribute('data-src')!, this.baseUrl).href,
-                title: namel.textContent!,
+                title: link.getAttribute('title')!,
                 url: new URL(link.getAttribute('href')!, this.baseUrl).href,
                 source: this.sourceId,
                 id: match[1],
@@ -142,18 +168,19 @@ export default class AowuAnime extends BaseVideoSource {
             });
         }
 
-        const tip = doc.querySelector('.page-tip');
-        // 共43条数据,当前1/5页
-        const match = tip?.textContent?.match(/当前(\d+)\/(\d+)页/);
+        const tip = doc.querySelector('div#page');
+        const last = tip?.children.item(-1).getAttribute('href');
+        const match = last?.match(/-+(\d+)-+\.html$/);
+        const totalPages = match ? parseInt(match[1]) : 1;
         return {
-            currentPage: parseInt(match?.[1] ?? '1'),
-            totalPages: parseInt(match?.[2] ?? '2'),
+            currentPage: page ?? 1,
+            totalPages,
             videos: res
         };
     }
 
     override async parseVideoUrl(url: string): Promise<IVideoURL[]> {
-        const doc = await getDocument(url);
+        const doc = await getDocument(url, { useProxy: true });
         const scr = doc.getElementsByTagName('script').find(e => e.innerText.includes('player_aaaa'))?.textContent;
         assert(scr, `Failed to get video url from ${url}`);
         const info = new Function(scr + ';return player_aaaa;')() as IPlayerInfo;

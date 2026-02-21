@@ -24,8 +24,9 @@
 ## 支持源
  - agefans动漫（推荐）
  - akianime动漫（还有很多与这个源高度相似的，可以以此扩展）
- - HAnime1黄漫（推荐）
- - AVBebe黄漫（推荐）
+ - 1anime动漫（推荐）
+ - HAnime1黄漫
+ - AVBebe 二次元动画（推荐）
  - SMWeiaona（推荐）
  - 海贼王（推荐）
  - 17c

@@ -491,6 +491,11 @@ body {
     gap: 20px;
 }
 
+.video-detail-info2 {
+    display: flex;
+    gap: 12px;
+}
+
 .video-info-section h4 {
     color: var(--text-primary);
     margin-bottom: 15px;
@@ -1444,12 +1449,12 @@ body {
     display: flex;
     flex-direction: row;
     gap: 20px;
+    /* align-items: start; */
 }
 
 .series-poster {
     width: 180px;
     flex-shrink: 0;
-    aspect-ratio: 3/4;
     border-radius: var(--border-radius);
     overflow: hidden;
     background-color: var(--bg-tertiary);
@@ -1564,6 +1569,9 @@ body {
     font-size: 14px;
     line-height: 1.6;
     color: var(--text-secondary);
+    max-height: 100px;
+    overflow-y: auto;
+    overflow-x: hidden;
 }
 
 /* 剧集容器 */
