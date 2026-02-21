@@ -1386,6 +1386,7 @@ class VideoManager {
         const videoPlayer = DOMHelper.$('#videoPlayer');
         const videoDetailInfo = DOMHelper.$('#videoDetailInfo');
         const qualitySelection = DOMHelper.$('#qualitySelection');
+        const videoAction = DOMHelper.$('#videoAction');
         
         if (!modal || !modalTitle || !videoPlayer || !videoDetailInfo) return;
         
@@ -1400,6 +1401,8 @@ class VideoManager {
         qualitySelection.innerHTML = '';
         
         DOMHelper.show(modal);
+        DOMHelper.hide(qualitySelection);
+        DOMHelper.hide(videoAction);
         
         try {
             this.showLoading();
@@ -1664,7 +1667,7 @@ class VideoManager {
                     });
                     
                     // 创建下载任务
-                    const downloadTitle = `${seriesVideo.title} - ${episode.title || episode.episodeNumber}`;
+                    const downloadTitle = `${seriesVideo.title} - ${episode.episodeNumber}.${episode.title}`;
                     await this.createSeriesDownload(downloadTitle, highestQuality.url, episode.url);
                     successCount++;
                 } else {
@@ -1778,6 +1781,11 @@ class VideoManager {
             console.error('playEpisode: 缺少必要参数');
             return;
         }
+
+        const actionBtn = DOMHelper.$('#downloadVideoBtn');
+        const qualitySelection = DOMHelper.$('#qualitySelection');
+        DOMHelper.show(qualitySelection);
+        DOMHelper.show(actionBtn);
         
         this.currentSeriesVideo = seriesVideo;
         this.currentSeriesId = seriesVideo.id;

@@ -28,7 +28,7 @@ interface IPlayerInfo {
 
 export default class OneAnime extends BaseVideoSource {
     constructor() {
-        super('1anime', '1Anime(爬虫需要代理)', 'https://1anime.me/', true);
+        super('1anime', '1Anime', 'https://1anime.org/', true);
     }
 
     override async init(): Promise<void> {
@@ -37,7 +37,7 @@ export default class OneAnime extends BaseVideoSource {
     }
 
     override async getHomeVideos(page?: number): Promise<IVideoList> {
-        const home = await getDocument(this.baseUrl, { useProxy: true });
+        const home = await getDocument(this.baseUrl);
         const vid: IVideoItem[] = [];
         for (const el of home.querySelectorAll('div.module-item')) {
             const link = el.querySelector('a[title]')!;
@@ -64,7 +64,7 @@ export default class OneAnime extends BaseVideoSource {
     override async getSeries(seriesId: string, url?: string): Promise<ISeriesResult | null> {
         // 优先使用传入的URL，否则根据ID构造URL
         const pageUrl = url ?? new URL(`/voddetail/${seriesId}.html`, this.baseUrl).href;
-        const doc = await getDocument(pageUrl, { useProxy: true });
+        const doc = await getDocument(pageUrl);
         const ser: IEpisode[] = [];
         let total = 0;
         for (const group of doc.querySelectorAll('div.module-player-list')) {
@@ -147,8 +147,7 @@ export default class OneAnime extends BaseVideoSource {
 
     override async searchVideos(query: string, page?: number): Promise<IVideoList> {
         const doc = await getDocument(
-            new URL(`/vodsearch/${encodeURIComponent(query)}----------${page}---.html`, this.baseUrl),
-            { useProxy: true }
+            new URL(`/vodsearch/${encodeURIComponent(query)}----------${page}---.html`, this.baseUrl)
         );
         const res: IVideoItem[] = [];
         for (const el of doc.querySelectorAll('.module-items > div.module-item')) {
@@ -180,7 +179,7 @@ export default class OneAnime extends BaseVideoSource {
     }
 
     override async parseVideoUrl(url: string): Promise<IVideoURL[]> {
-        const doc = await getDocument(url, { useProxy: true });
+        const doc = await getDocument(url);
         const scr = doc.getElementsByTagName('script').find(e => e.innerText.includes('player_aaaa'))?.textContent;
         assert(scr, `Failed to get video url from ${url}`);
         const info = new Function(scr + ';return player_aaaa;')() as IPlayerInfo;
