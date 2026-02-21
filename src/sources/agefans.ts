@@ -43,6 +43,7 @@ export default class AGEFans extends BaseVideoSource {
 
     constructor() {
         super('agefans', 'agefans', '', true);
+        this.imageAspectRatio = '9/16';
     }
 
     override async init(): Promise<void> {

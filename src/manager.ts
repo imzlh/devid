@@ -1,8 +1,12 @@
 import { BaseVideoSource } from './sources/index.ts';
-import { ISource, ISourceHealth, ISeriesResult, IEpisode } from './types/index.ts';
+import { ISource, ISourceHealth, ISeriesResult, IEpisode, IVideoList } from './types/index.ts';
 import { logError, logInfo, logDebug, logWarn } from "./utils/logger.ts";
 import { getConfig } from "./config/index.ts";
 import { SOURCES } from "./sources.ts";
+import { APICache } from "./utils/cache.ts";
+
+// API 缓存实例（20秒过期）
+const apiCache = new APICache(20000);
 
 // 带超时的异步操作包装器
 function withTimeout<T>(
@@ -188,6 +192,7 @@ export class VideoSourceManager {
                 name: wrapper.name,
                 baseUrl: wrapper.source.base || '',
                 enabled: wrapper.initialized,
+                imageAspectRatio: wrapper.source.getImageAspectRatio(),
                 health: {
                     status: wrapper.initialized ? 'healthy' : 'unhealthy',
                     lastCheck: 0,
@@ -269,5 +274,49 @@ export class VideoSourceManager {
             logError(`获取无限系列视频 ${seriesId} 失败:`, error);
             return null;
         }
+    }
+
+    // ==================== 带缓存的API方法 ====================
+
+    /**
+     * 获取主页视频列表（带缓存）
+     */
+    async getHomeVideos(page: number = 1): Promise<IVideoList> {
+        const active = this.getActiveSource();
+        if (!active) {
+            throw new Error("没有活动的视频源");
+        }
+
+        const cacheKey = `home:${active.getId()}:${page}`;
+        const cached = apiCache.get<IVideoList>('home', [cacheKey]);
+        if (cached) {
+            logDebug(`缓存命中: ${cacheKey}`);
+            return cached;
+        }
+
+        const result = await active.getHomeVideos(page);
+        apiCache.set('home', [cacheKey], result);
+        return result;
+    }
+
+    /**
+     * 搜索视频（带缓存）
+     */
+    async searchVideos(query: string, page: number = 1): Promise<IVideoList> {
+        const active = this.getActiveSource();
+        if (!active) {
+            throw new Error("没有活动的视频源");
+        }
+
+        const cacheKey = `search:${active.getId()}:${query}:${page}`;
+        const cached = apiCache.get<IVideoList>('search', [cacheKey]);
+        if (cached) {
+            logDebug(`缓存命中: ${cacheKey}`);
+            return cached;
+        }
+
+        const result = await active.searchVideos(query, page);
+        apiCache.set('search', [cacheKey], result);
+        return result;
     }
 }

@@ -106,6 +106,8 @@ export interface ISource {
     baseUrl: string;
     enabled: boolean;
     health?: ISourceHealth;
+    /** 图片宽高比，默认16/9 */
+    imageAspectRatio?: string;
 }
 
 export enum URLProxy {

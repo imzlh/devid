@@ -1,7 +1,8 @@
 import assert from "node:assert";
-import { getDocument, getImage } from "../utils/fetch.ts";
+import { findAvailableFast, getDocument, getImage } from "../utils/fetch.ts";
 import { BaseVideoSource, ImageData } from "./index.ts";
 import { IVideoList, IVideoItem, IVideoURL, ISeriesResult, IEpisode, URLProxy } from "../types/index.ts";
+import { logInfo } from "../utils/logger.ts";
 
 /**
  * var player_aaaa={"flag":"play","encrypt":0,"trysee":0,"points":0,"link":"\/bgmplay\/PEcDDE-1-1.html","link_next":"\/bgmplay\/PEcDDE-1-2.html","link_pre":"","vod_data":{"vod_name":"\u3010\u6211\u63a8\u7684\u5b69\u5b50\u3011 \u7b2c\u4e09\u5b63","vod_actor":"\u5e73\u5c71\u5bdb\u83dc","vod_director":"\u5e73\u7267\u5927\u8f85","vod_class":"\u756a\u52a8\u6f2b,\u65e5\u97e9\u52a8\u6f2b"},"url":"Doki-69741358ca4ebe01ed07a8d27c733c5db108cb2bc9a59c3d3ea655aa0ac56963500a9cd6227e36504a38f994050eeb80a1393b9a704053f450062c9ed8380706cb3db8f96815b214a22fc0ca851be93a","url_next":"Doki-69741358ca4ebe01ed07a8d27c733c5db108cb2bc9a59c3d3ea655aa0ac56963500a9cd6227e36504a38f994050eeb80a1393b9a704053f450062c9ed8380706046b8508d9c1cf10ab3600d5232ebf55","from":"YDY","server":"no","note":"","id":"PEcDDE","sid":1,"nid":1}
@@ -29,11 +30,25 @@ interface IPlayerInfo {
 export default class OneAnime extends BaseVideoSource {
     constructor() {
         super('1anime', '1Anime', 'https://1anime.org/', true);
+        this.imageAspectRatio = '9/16';
     }
 
     override async init(): Promise<void> {
-        // noop
-        // 这个源简单得要命，直接照搬aowu的配置，API都没有
+        const doc = await getDocument(this.baseUrl);
+        const links = doc.querySelectorAll('.links li > a[href]');
+        const urlMap = new Map<string, string>();
+        for (const link of links) {
+            const href = link.getAttribute('href');
+            if (!href) continue;
+            const url = new URL(href, this.baseUrl).host;
+            urlMap.set(url, link.innerText.trim());
+        }
+
+        // try best
+        const fastest = await findAvailableFast(urlMap.keys().map(e => 'https://' + e).toArray());
+        assert(fastest, 'No available server');
+        this.baseUrl = fastest;
+        logInfo(`1Anime: 使用最快的源 ${urlMap.get(fastest)!} (${fastest})`);
     }
 
     override async getHomeVideos(page?: number): Promise<IVideoList> {

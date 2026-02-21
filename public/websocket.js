@@ -44,6 +44,8 @@ class WebSocketRPCClient {
         this.maxReconnectAttempts = 5;
         /** @type {number} */
         this.reconnectDelay = 3000;
+        /** @type {Function|null} */
+        this.onDisconnect = null;
     }
 
     /**
@@ -69,6 +71,10 @@ class WebSocketRPCClient {
 
                 this.ws.onclose = () => {
                     this.connected = false;
+                    // 触发断开连接回调
+                    if (this.onDisconnect) {
+                        this.onDisconnect();
+                    }
                     this.attemptReconnect();
                 };
 
@@ -92,7 +98,6 @@ class WebSocketRPCClient {
         }
 
         this.reconnectAttempts++;
-        console.log(`WebSocket ${this.reconnectDelay}ms 后尝试第 ${this.reconnectAttempts} 次重连...`);
 
         setTimeout(() => {
             this.connect(this.url).catch(() => {

@@ -107,14 +107,16 @@ class VideoManager {
     
     /**
      * 加载URL哈希参数
+     * @returns {boolean} 是否从hash加载了页面
      */
     loadFromHash() {
         const hash = window.location.hash.substring(1);
-        if (!hash) return;
-        
+        if (!hash) return false;
+
         try {
             const params = new URLSearchParams(hash);
-            
+            let loadedPage = false;
+
             // 加载搜索查询
             const searchQuery = params.get('search');
             if (searchQuery) {
@@ -124,14 +126,15 @@ class VideoManager {
                     this.searchQuery = decodeURIComponent(searchQuery);
                 }
             }
-            
+
             // 加载页面状态
             const page = params.get('page');
             if (page && ['home', 'search', 'downloads', 'sources'].includes(page)) {
                 this.currentPage = page;
                 this.switchPage(page, false); // 不更新哈希
+                loadedPage = true;
             }
-            
+
             // 加载页码
             const pageNum = params.get('pageNum');
             if (pageNum && !isNaN(parseInt(pageNum))) {
@@ -142,8 +145,11 @@ class VideoManager {
                     this.pagination.search.current = pageNumInt;
                 }
             }
+
+            return loadedPage;
         } catch (error) {
             console.error('加载哈希参数失败:', error);
+            return false;
         }
     }
     
@@ -193,9 +199,12 @@ class VideoManager {
             this.isInitialized = true;
 
             // 加载URL哈希参数
-            this.loadFromHash();
+            const hashLoadedPage = this.loadFromHash();
 
-            await this.loadHomePage();
+            // 如果hash没有指定页面，默认加载首页
+            if (!hashLoadedPage && this.currentPage === 'home') {
+                await this.loadHomePage();
+            }
 
             // 启动WebSocket连接（替代轮询）
             this.initWebSocket();
@@ -203,7 +212,6 @@ class VideoManager {
             // 健康检查
             try {
                 await this.api.healthCheck();
-                console.log('API服务正常');
             } catch (error) {
                 this.notifications.error('API服务连接失败');
             }
@@ -219,17 +227,25 @@ class VideoManager {
     async initWebSocket() {
         try {
             const wsUrl = `ws://${window.location.host}/ws`;
+
+            // 设置断开连接回调
+            this.wsClient.onDisconnect = () => {
+                this.startDownloadMonitoring();
+            };
+
             await this.wsClient.connect(wsUrl);
-            console.log('WebSocket已连接');
 
             // 将WebSocket客户端设置到API管理器
             this.api.setWebSocketClient(this.wsClient);
 
             // 注册推送消息处理器
             this.registerPushHandlers();
+
+            // WebSocket连接成功，停止轮询
+            this.stopDownloadMonitoring();
         } catch (error) {
             console.error('WebSocket连接失败:', error);
-            // WebSocket连接失败时，回退到轮询
+            // WebSocket连接失败时，启动轮询作为回退
             this.startDownloadMonitoring();
         }
     }
@@ -264,7 +280,6 @@ class VideoManager {
 
         // 源切换推送
         this.wsClient.onPush('source:change', ({ sourceId, sourceName }) => {
-            console.log(`源切换: ${sourceId} - ${sourceName}`);
             if (this.currentSource?.id !== sourceId) {
                 this.loadActiveSource().then(() => {
                     this.reloadCurrentPage();
@@ -274,7 +289,6 @@ class VideoManager {
 
         // 验证码请求推送
         this.wsClient.onPush('captcha:required', (data) => {
-            console.log('收到验证码请求:', data);
             this.handleCaptchaRequired(data);
         });
     }
@@ -703,7 +717,6 @@ class VideoManager {
         try {
             // 检查是否需要加载（强制刷新或缓存过期）
             if (!forceRefresh && !this.shouldLoadPageData(page)) {
-                console.log(`页面 ${page} 数据仍在缓存中，跳过加载`);
                 return;
             }
             
@@ -740,6 +753,10 @@ class VideoManager {
         try {
             const activeSource = await this.api.getActiveSource();
             this.currentSource = activeSource;
+            // 应用当前源的图片比例到CSS变量
+            if (activeSource?.imageAspectRatio) {
+                document.documentElement.style.setProperty('--video-aspect-ratio', activeSource.imageAspectRatio);
+            }
             this.updateCurrentSourceDisplay();
         } catch (error) {
             console.log('No active source set');
@@ -1125,14 +1142,25 @@ class VideoManager {
     renderVideoGrid(videos, containerId) {
         const container = DOMHelper.$(`#${containerId}`);
         if (!container) return;
-        
+
         container.innerHTML = '';
-        
+
         if (!videos || videos.length === 0) {
             container.innerHTML += '<div class="text-center">暂无视频</div>';
             return;
         }
-        
+
+        // 根据图片比例调整 grid 列宽
+        const aspectRatio = this.currentSource?.imageAspectRatio || '16/9';
+        const [w, h] = aspectRatio.split('/').map(Number);
+        const ratio = w / h;
+        if (ratio < 1) {
+            // 竖屏图片使用更小的列宽
+            container.style.gridTemplateColumns = 'repeat(auto-fill, minmax(160px, 1fr))';
+        } else {
+            container.style.gridTemplateColumns = '';
+        }
+
         videos.forEach(video => {
             const videoCard = this.createVideoCard(video);
             container.appendChild(videoCard);
@@ -1168,8 +1196,18 @@ class VideoManager {
             badgeHtml = '<div class="series-badge">系列</div>';
         }
 
+        // 获取当前源的图片比例
+        const aspectRatio = this.currentSource?.imageAspectRatio || '16/9';
+        
+        // 根据宽高比添加 CSS 类，用于调整 grid 列宽
+        const [w, h] = aspectRatio.split('/').map(Number);
+        const ratio = w / h;
+        if (ratio < 1) {
+            card.classList.add('portrait-card');
+        }
+        
         card.innerHTML = `
-            <div class="video-thumbnail">
+            <div class="video-thumbnail" data-ratio="${aspectRatio}">
                 <img src="${thumbnailUrl}"
                      alt="${video.title}"
                      loading="lazy"
@@ -2400,13 +2438,15 @@ class VideoManager {
     }
     
     /**
-     * 开始下载监控
+     * 开始下载监控（轮询方式）
+     * 仅在WebSocket断开时使用
      */
     startDownloadMonitoring() {
-        // 清除现有的定时器
+        // 如果已经在轮询，不要重复启动
         if (this.downloadInterval) {
-            clearInterval(this.downloadInterval);
+            return;
         }
+
 
         // 每2s更新一次下载状态
         this.downloadInterval = setInterval(async () => {
@@ -2417,6 +2457,16 @@ class VideoManager {
                 await this.updateDownloadBadge();
             }
         }, 2000);
+    }
+
+    /**
+     * 停止下载监控（轮询）
+     */
+    stopDownloadMonitoring() {
+        if (this.downloadInterval) {
+            clearInterval(this.downloadInterval);
+            this.downloadInterval = null;
+        }
     }
     
     /**
@@ -2573,15 +2623,16 @@ window.addEventListener('resize', () => {
 // 页面可见性变化处理
 document.addEventListener('visibilitychange', () => {
     if (!app) return;
-    
+
     if (document.hidden) {
-        // 页面隐藏时暂停下载监控
-        if (app.downloadInterval) {
-            clearInterval(app.downloadInterval);
-            app.downloadInterval = null;
+        // 页面隐藏时暂停下载监控（仅当使用轮询时）
+        if (app.downloadInterval && !app.wsClient?.connected) {
+            app.stopDownloadMonitoring();
         }
     } else {
-        // 页面显示时恢复下载监控
-        app.startDownloadMonitoring();
+        // 页面显示时，如果WebSocket未连接，则恢复轮询
+        if (!app.wsClient?.connected) {
+            app.startDownloadMonitoring();
+        }
     }
 });

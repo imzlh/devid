@@ -30,6 +30,7 @@ interface IPlayerInfo {
 export default class AowuAnime extends BaseVideoSource {
     constructor() {
         super('嗷呜动漫', 'aowu', 'https://www.aowu.tv', true);
+        this.imageAspectRatio = '9/16';
     }
 
     override async init(): Promise<void> {

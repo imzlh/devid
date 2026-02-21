@@ -382,21 +382,35 @@ body {
 .video-thumbnail {
     position: relative;
     width: 100%;
-    height: 180px;
+    aspect-ratio: 16/9;
     overflow: hidden;
     background-color: var(--bg-tertiary);
 }
 
-@media (max-width: 600px) {
-    .video-thumbnail {
-        height: 140px;
-    }
+/* 支持不同比例的图片 */
+.video-thumbnail[data-ratio="9/16"] {
+    aspect-ratio: 2/3; /* 使用更宽的比例显示竖屏图片，保持美观 */
 }
 
-@media (max-width: 400px) {
-    .video-thumbnail {
-        height: 110px;
-    }
+.video-thumbnail[data-ratio="9/16"] img {
+    object-fit: cover;
+    object-position: center top;
+}
+
+.video-thumbnail[data-ratio="3/4"] {
+    aspect-ratio: 3/4;
+}
+
+.video-thumbnail[data-ratio="1/1"] {
+    aspect-ratio: 1/1;
+}
+
+.video-thumbnail[data-ratio="4/3"] {
+    aspect-ratio: 4/3;
+}
+
+.video-thumbnail[data-ratio="21/9"] {
+    aspect-ratio: 21/9;
 }
 
 .video-thumbnail img {
@@ -490,11 +504,6 @@ body {
     flex-direction: column;
     gap: 20px;
     margin-bottom: 20px;
-}
-
-.video-detail-info2 {
-    display: flex;
-    gap: 12px;
 }
 
 .video-info-section h4 {

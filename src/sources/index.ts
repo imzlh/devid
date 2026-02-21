@@ -19,11 +19,19 @@ export abstract class BaseVideoSource {
     // 是否支持系列/动漫功能
     protected supportsSeries = false;
 
+    // 图片宽高比，默认16/9
+    protected imageAspectRatio = '16/9';
+
     constructor(sourceId: string, sourceName: string, baseUrl: string, series?: boolean) {
         this.sourceId = sourceId;
         this.sourceName = sourceName;
         this.baseUrl = baseUrl;
         this.supportsSeries = !!series;
+    }
+
+    // 获取图片宽高比
+    getImageAspectRatio(): string {
+        return this.imageAspectRatio;
     }
 
     // 初始化视频源

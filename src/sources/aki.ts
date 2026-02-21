@@ -104,6 +104,7 @@ export default class AkiAnimeAPI extends BaseVideoSource {
 
     constructor() {
         super('akianime', 'AkiAnime', 'https://www.akianime.com', true);
+        this.imageAspectRatio = '9/16';
     }
 
     override async init(): Promise<void> {

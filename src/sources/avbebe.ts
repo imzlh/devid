@@ -19,7 +19,7 @@ interface VideoDetail {
 
 export default class AvBebe extends BaseVideoSource {
     constructor() {
-        super("avbebe", "AvBebe(强制使用代理)", "https://avbebe.love/");
+        super("avbebe", "AvBebe(强制使用代理)", "https://www.avbebe.love/");
     }
 
     override async init(): Promise<void> {

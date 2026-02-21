@@ -14,6 +14,7 @@ import {
 import { getConfig, createDefaultConfig } from "./config/index.ts";
 import { rpcServer } from "./websocket/rpc.ts";
 import { pushDownloadUpdate, pushSourceChange } from "./websocket/push.ts";
+import { apiCache } from "./utils/cache.ts";
 
 // 初始化配置（自动创建默认配置文件）
 await createDefaultConfig();
@@ -129,14 +130,14 @@ app.get("/api/sources/active", (c) => {
     const sourceId = videoSourceManager.getActiveSourceId();
     return c.json({
         id: sourceId,
-        name: activeSource?.getName() || null
+        name: activeSource?.getName() || null,
+        imageAspectRatio: activeSource?.getImageAspectRatio() || '16/9'
     });
 });
 
 // 获取主页视频
 app.get("/api/home-videos", async (c) => {
     try {
-        const activeSource = videoSourceManager.getActiveSource();
         const pageParam = c.req.query("page") || "1";
 
         if (!validatePagination(pageParam)) {
@@ -147,12 +148,7 @@ app.get("/api/home-videos", async (c) => {
         const page = parseInt(pageParam);
         logDebug(`获取主页视频, page: ${page}`);
 
-        if (!activeSource) {
-            logWarn("没有活动的视频源");
-            return c.json({ error: "没有活动的视频源" }, 400);
-        }
-
-        const result = await activeSource.getHomeVideos(page);
+        const result = await videoSourceManager.getHomeVideos(page);
         logInfo(`获取到 ${result.videos.length} 个主页视频, 当前页: ${result.currentPage}, 总页数: ${result.totalPages}`);
         return c.json(result);
     } catch (error) {
@@ -164,7 +160,6 @@ app.get("/api/home-videos", async (c) => {
 // 搜索视频
 app.get("/api/search", async (c) => {
     try {
-        const activeSource = videoSourceManager.getActiveSource();
         const query = c.req.query("q") || "";
         const pageParam = c.req.query("page") || "1";
 
@@ -181,12 +176,7 @@ app.get("/api/search", async (c) => {
         const page = parseInt(pageParam);
         logDebug(`搜索视频: ${query}, page: ${page}`);
 
-        if (!activeSource) {
-            logWarn("没有活动的视频源");
-            return c.json({ error: "没有活动的视频源" }, 400);
-        }
-
-        const results = await activeSource.searchVideos(query, page);
+        const results = await videoSourceManager.searchVideos(query, page);
         logInfo(`搜索到 ${results.videos.length} 个视频`);
         return c.json(results);
     } catch (error) {
@@ -857,7 +847,8 @@ rpcServer.register("sources.getActive", () => {
     const sourceId = videoSourceManager.getActiveSourceId();
     return {
         id: sourceId,
-        name: activeSource?.getName() || null
+        name: activeSource?.getName() || null,
+        imageAspectRatio: activeSource?.getImageAspectRatio() || '16/9'
     };
 });
 
@@ -870,22 +861,24 @@ rpcServer.register("sources.setActive", async (...params: unknown[]) => {
             pushSourceChange(newSource.getId(), newSource.getName());
         }
     }
-    return { success };
+    const activeSource = videoSourceManager.getActiveSource();
+    return {
+        success,
+        id: activeSource?.getId(),
+        name: activeSource?.getName(),
+        imageAspectRatio: activeSource?.getImageAspectRatio() || '16/9'
+    };
 });
 
 rpcServer.register("videos.getHome", async (...params: unknown[]) => {
     const page = (params[0] as number) || 1;
-    const activeSource = videoSourceManager.getActiveSource();
-    if (!activeSource) throw new Error("没有活动的视频源");
-    return activeSource.getHomeVideos(page);
+    return videoSourceManager.getHomeVideos(page);
 });
 
 rpcServer.register("videos.search", async (...params: unknown[]) => {
     const query = params[0] as string;
     const page = (params[1] as number) || 1;
-    const activeSource = videoSourceManager.getActiveSource();
-    if (!activeSource) throw new Error("没有活动的视频源");
-    return activeSource.searchVideos(query, page);
+    return videoSourceManager.searchVideos(query, page);
 });
 
 rpcServer.register("series.getDetail", async (...params: unknown[]) => {
