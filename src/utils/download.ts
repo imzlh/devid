@@ -324,6 +324,7 @@ export class DownloadManager {
      * 下载M3U8视频（使用FFmpeg）
      */
     private async downloadM3U8Video(task: IDownloadTask, signal: AbortSignal): Promise<boolean> {
+        let logPath: string | undefined;
         try {
             // 检查文件是否已存在
             try {
@@ -396,7 +397,7 @@ export class DownloadManager {
             signal.addEventListener('abort', abortHandler, { once: true });
 
             // 等待 FFmpeg 完成
-            const logPath = join(getConfig().server.dataDir, basename(task.filePath) + '.log');
+            logPath = join(getConfig().server.dataDir, basename(task.filePath) + '.log');
             const file = await Deno.open(logPath, { write: true, create: true, read: false });
             await mergeReadableStreams(command.stdout, command.stderr).pipeTo(file.writable);
             const status = await command.status;
@@ -417,9 +418,6 @@ export class DownloadManager {
                 // 忽略统计错误
             }
 
-            file.close();
-            await Deno.remove(logPath);
-
             return true;
         } catch (error) {
             // 清理不完整文件
@@ -429,6 +427,8 @@ export class DownloadManager {
                 // 忽略清理错误
             }
             throw error;
+        } finally {
+            if (logPath) await Deno.remove(logPath);
         }
     }
 
