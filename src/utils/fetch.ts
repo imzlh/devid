@@ -104,16 +104,12 @@ export async function fetch2(
         ...fetchOptions
     } = options;
 
-    // 创建 AbortController 用于超时控制
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
+    let currentUrl = String(url);
+    let redirectCount = 0;
+    const cookieJar = enableCookies ? await loadCookies(currentUrl) : [];
 
-    try {
-        let currentUrl = String(url);
-        let redirectCount = 0;
-        const cookieJar = enableCookies ? await loadCookies(currentUrl) : [];
-
-        while (redirectCount <= maxRedirects) {
+    while (redirectCount <= maxRedirects) {
+        try {
             // 准备请求头
             const headers = new Headers({
                 "User-Agent": DEFAULT_USER_AGENT,
@@ -135,21 +131,11 @@ export async function fetch2(
             }
 
             // 发送请求
-            let response;
-            try{
-                response = await (options.useProxy ? useProxy : fetch)(currentUrl, {
-                    ...fetchOptions,
-                    headers,
-                    signal: controller.signal,
-                    redirect: "manual", // 手动处理重定向
-                });
-                // 获取到响应后清除超时，允许大文件下载完成
-                clearTimeout(timeoutId);
-            }catch(e){
-                if (options.noRetry) throw e;
-                console.warn(`请求失败，重试 ${redirectCount += 1} 次: ${e}`);
-                continue;
-            }
+            const response = await (options.useProxy ? useProxy : fetch)(currentUrl, {
+                ...fetchOptions,
+                headers,
+                redirect: "manual", // 手动处理重定向
+            });
 
             // 处理 cookies
             if (enableCookies) {
@@ -194,12 +180,13 @@ export async function fetch2(
             enhancedResponse.redirectCount = redirectCount;
 
             return enhancedResponse as FetchResponse;
+        } catch (error) {
+            if (options.noRetry || options?.signal?.aborted) throw error;
+            else logError(`Request failed, retry ${redirectCount + 1}: ${error}`);
         }
-
-        throw new Error(`Maximum retry or redirect (${maxRedirects}) exceeded`);
-    } finally {
-        clearTimeout(timeoutId);
     }
+
+    throw new Error(`Maximum retry or redirect (${maxRedirects}) exceeded`);
 }
 
 /**

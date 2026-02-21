@@ -111,7 +111,7 @@ class APIManager {
     async request(url, options = {}, retryCount = 0) {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), this.requestTimeout);
-        
+
         try {
             const response = await fetch(this.baseURL + url, {
                 headers: {
@@ -121,9 +121,9 @@ class APIManager {
                 signal: controller.signal,
                 ...options
             });
-            
+
             clearTimeout(timeoutId);
-            
+
             if (!response.ok) {
                 // 尝试解析错误响应
                 let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
@@ -135,9 +135,15 @@ class APIManager {
                 } catch {
                     // 忽略解析错误
                 }
+
+                // 504 网关超时特殊处理
+                if (response.status === 504) {
+                    throw new Error('服务器响应超时，请稍后重试');
+                }
+
                 throw new Error(errorMessage);
             }
-            
+
             const contentType = response.headers.get('content-type');
             if (contentType && contentType.includes('application/json')) {
                 return await response.json();
@@ -146,18 +152,18 @@ class APIManager {
             }
         } catch (error) {
             clearTimeout(timeoutId);
-            
+
             if (error.name === 'AbortError') {
-                throw new Error('请求超时，请检查网络连接');
+                throw new Error('请求超时，请检查网络连接或稍后重试');
             }
-            
+
             // 网络错误重试机制
             const maxRetries = 2;
             if (retryCount < maxRetries && (error.message.includes('fetch') || error.message.includes('network'))) {
                 await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
                 return this.request(url, options, retryCount + 1);
             }
-            
+
             throw error;
         }
     }

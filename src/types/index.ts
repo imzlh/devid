@@ -109,8 +109,8 @@ export interface ISource {
 }
 
 export enum URLProxy {
-    DISABLE = 0,    // 不使用
-    SERVER,         // 本地服务器代理，适用于无GFW ban的情况
+    NONE = 0,       // 不使用
+    LOCAL,          // 本地服务器代理，适用于无GFW ban的情况
     REMOTE          // 远程代理，适用于有GFW ban的情况
 }
 

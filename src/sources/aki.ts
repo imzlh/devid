@@ -162,6 +162,10 @@ export default class AkiAnimeAPI extends BaseVideoSource {
         const img = doc.querySelector('.detail-pic img');
         const name = doc.querySelector('h3.slide-info-title');
         const btn = doc.querySelector('.vod-detail-bnt a');
+        const fraction = doc.querySelector('div.fraction');
+        const desc = doc.querySelector('div#height_limit');
+        const year = Array.from(doc.querySelectorAll('.slide-info-remarks'))
+            .find(e => /^[0-9]{4}$/.test(e.innerText))?.innerText;
 
         return {
             thumbnail: new URL(img?.getAttribute('data-src')!, this.baseUrl).href,
@@ -171,7 +175,10 @@ export default class AkiAnimeAPI extends BaseVideoSource {
             totalEpisodes: total,
             source: this.sourceId,
             id: seriesId,
-            url: new URL(btn?.getAttribute('href')!, this.baseUrl).href
+            url: new URL(btn?.getAttribute('href')!, this.baseUrl).href,
+            description: desc?.textContent?.trim(),
+            rating: parseInt(fraction?.textContent?.trim() ?? '0'),
+            year: year ? parseInt(year) : undefined,
         };
     }
 
@@ -216,7 +223,7 @@ export default class AkiAnimeAPI extends BaseVideoSource {
             quality: '1080p',
             url: inf.url,
             format: inf.type === 'hls'? 'm3u8' : 'h5',
-            proxy: URLProxy.SERVER
+            proxy: URLProxy.NONE
         }];
     }
 

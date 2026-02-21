@@ -44,7 +44,7 @@ export default class AkiAnimeAPI extends BaseVideoSource {
             const link = el.getElementsByTagName('a')?.[0];
             const image = el.getElementsByTagName('img')?.[0];
             if (!link || !image) continue;
-            const match = link.getAttribute('href')?.match(/\/bangumi\/([A-Za-z0-9]+)\/?/);
+            const match = link.getAttribute('href')?.match(/\/moe-n\/([A-Za-z0-9]+)\/?/);
             if (!match) continue;
             vid.push({
                 thumbnail: new URL(image.getAttribute('data-src')!, this.baseUrl).href,
@@ -64,7 +64,7 @@ export default class AkiAnimeAPI extends BaseVideoSource {
 
     override async getSeries(seriesId: string, url?: string): Promise<ISeriesResult | null> {
         // 优先使用传入的URL，否则根据ID构造URL
-        const pageUrl = url ?? new URL(`/bangumi/${seriesId}/`, this.baseUrl).href;
+        const pageUrl = url ?? new URL(`/moe-n/${seriesId}/`, this.baseUrl).href;
         const doc = await getDocument(pageUrl);
         const ser: IEpisode[] = [];
         let total = 0;
@@ -80,7 +80,7 @@ export default class AkiAnimeAPI extends BaseVideoSource {
                     id: match[1],
                     title: link.textContent!,
                     seriesId,
-                    episodeNumber: ep++
+                    episodeNumber: ep++,
                 });
             }
             total = Math.max(total, ep - 1);
@@ -161,7 +161,7 @@ export default class AkiAnimeAPI extends BaseVideoSource {
             quality: '1080p',
             url: info.url,
             format: 'h5',   // not sure, but seems to be h5
-            proxy: URLProxy.SERVER
+            proxy: URLProxy.LOCAL
         }];
     }
 

@@ -49,7 +49,7 @@ export default class AGEFans extends BaseVideoSource {
         const readme = await getReadme.apply(null, AGEFans.SOURCE_GH_REPO);
         const sites = readme.content.match(/最新域名：\s*\[([^\]]+)\]/);
         assert(sites, "找不到域名。可能已经GG？");
-        this.baseUrl = sites[1]!;
+        this.baseUrl = sites[1]!.replace('http://', 'https://');
     }
 
     private extractFromHtml(el: Element): IVideoItem {
@@ -163,7 +163,7 @@ export default class AGEFans extends BaseVideoSource {
     override async getSeries(seriesId: string, url?: string): Promise<ISeriesResult | null> {
         // 优先使用传入的URL，否则根据ID构造URL
         const pageUrl = url ?? new URL(`/detail/${seriesId}`, this.baseUrl).href;
-        const page = await getDocument(pageUrl);
+        const page = await getDocument(pageUrl.replace('http://', 'https://'));
         const node = page.querySelectorAll('.tab-content > .tab-pane');
         const res: IEpisode[] = [];
         for (const el of node) {
@@ -410,7 +410,7 @@ export default class AGEFans extends BaseVideoSource {
                 quality: "1080p",
                 url: decodeURIComponent(res.url),
                 format: res.type == 'dplayer' ? 'm3u8' : 'h5',
-                proxy: URLProxy.SERVER
+                proxy: URLProxy.LOCAL
             }
         ];
     }
