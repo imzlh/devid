@@ -1,5 +1,5 @@
 import { BaseVideoSource, ImageData } from './index.ts';
-import { IVideoItem, IVideoList, IVideoURL } from '../types/index.ts';
+import { IVideoItem, IVideoList, IVideoURL, URLProxy } from '../types/index.ts';
 import { fetch2, getImage as fetchImage, findAvailableFast, getDocument } from '../utils/fetch.ts';
 import { Document, DOMParser } from "dom";
 import { logError, logInfo } from "../utils/logger.ts";
@@ -90,7 +90,7 @@ export default class GG51VideoSource extends BaseVideoSource {
 
     private parsePage(document: Document): IVideoItem[] {
         // 提取视频列表
-        const videoElements = document.querySelectorAll('.videolist a.one');
+        const videoElements = document.querySelectorAll('a[href^="/view/"]');
         const videos: IVideoItem[] = [];
 
         for (const element of videoElements) {
@@ -99,23 +99,16 @@ export default class GG51VideoSource extends BaseVideoSource {
                 continue;
             }
 
-            const href = element.getAttribute('href') || '';
-            const titleElement = element.querySelector('.title');
-            const title = titleElement?.textContent?.trim() || '';
-
             const imgElement = element.querySelector('img');
             const thumbnail = imgElement?.getAttribute('data-original') || imgElement?.getAttribute('src') || '';
 
-            const durationElement = element.querySelector('.duration');
-            let duration = '';
-            if (durationElement) {
-                // 提取script标签内的文本内容
-                const scriptText = durationElement.textContent?.trim() || '';
-                const durationMatch = scriptText.match(/(\d{2}:\d{2}:\d{2})/);
-                if (durationMatch) {
-                    duration = durationMatch[1];
-                }
-            }
+            const durationScript = Array.from(element.querySelectorAll('script'))
+                .find(e => e.innerText.includes('secondsToHMS('));
+            const duration = durationScript?.innerText?.match(/secondsToHMS\((\d+)\)/)?.[1];
+            durationScript?.remove();
+            
+            const href = element.getAttribute('href') || '';
+            const title = element.innerText.trim();
 
             if (href && title) {
                 videos.push({
@@ -157,7 +150,7 @@ export default class GG51VideoSource extends BaseVideoSource {
                 id: item.view_key,
                 title: item.title,
                 thumbnail: new URL(item.poster, this.resolvedBaseUrl).href,
-                duration: item.duration.toString(),
+                duration: item.duration?.toString(),
                 url: new URL(item.play_url, this.resolvedBaseUrl).href,
                 source: this.sourceId
             });
@@ -244,7 +237,8 @@ export default class GG51VideoSource extends BaseVideoSource {
         return [{
             url: m3u8Url,
             quality: '高清',
-            resolution: '1920x1080'
+            resolution: '1920x1080',
+            proxy: URLProxy.LOCAL
         }];
     }
 

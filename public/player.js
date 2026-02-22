@@ -173,6 +173,27 @@ class ProgressManager {
     }
 
     /**
+     * 获取视频播放进度和元数据
+     * @param {string} videoId - 视频ID
+     * @returns {Object|null} 包含 time, duration, lastUpdated 的对象
+     */
+    getVideoProgressWithMeta(videoId) {
+        if (!videoId || !this.progressData[videoId]) {
+            return null;
+        }
+
+        const progress = this.progressData[videoId];
+        // 如果进度超过30天，返回null
+        if (Date.now() - progress.lastUpdated > 30 * 24 * 60 * 60 * 1000) {
+            delete this.progressData[videoId];
+            this.saveProgress();
+            return null;
+        }
+
+        return progress;
+    }
+
+    /**
      * 获取剧集播放进度
      * @param {string} episodeId - 剧集ID
      * @returns {number} 播放时间(秒)
@@ -270,6 +291,53 @@ class VideoPlayerManager {
     }
 
     /**
+     * 构建播放器控件列表
+     * @param {Array} episodes - 剧集列表
+     * @param {number} currentIndex - 当前剧集索引
+     * @returns {Array} 控件配置数组
+     */
+    buildPlayerControls(episodes, currentIndex) {
+        const controls = [];
+
+        // 检查是否有上一集
+        const hasPrev = episodes.length > 1 && currentIndex > 0;
+        // 检查是否有下一集
+        const hasNext = episodes.length > 1 && currentIndex < episodes.length - 1;
+
+        if (hasPrev) {
+            controls.push({
+                name: 'last',
+                index: 5,
+                position: 'left',
+                html: `<i class="art-icon">
+                        <svg width="22" height="22" viewBox="0 0 16 16">
+                            <path d="M4 4a.5.5 0 0 1 1 0v3.248l6.267-3.636c.54-.313 1.232.066 1.232.696v7.384c0 .63-.692 1.01-1.232.697L5 8.753V12a.5.5 0 0 1-1 0V4z"/>
+                        </svg>
+                    </i>`,
+                tooltip: '上一集',
+                click: () => this.playPrevEpisode()
+            });
+        }
+
+        if (hasNext) {
+            controls.push({
+                name: 'next',
+                index: 20,
+                position: 'left',
+                html: `<i class="art-icon">
+                        <svg width="22" height="22" viewBox="0 0 16 16">
+                            <path d="M12.5 4a.5.5 0 0 0-1 0v3.248L5.233 3.612C4.693 3.3 4 3.678 4 4.308v7.384c0 .63.692 1.01 1.233.697L11.5 8.753V12a.5.5 0 0 0 1 0V4z"/>
+                        </svg>
+                    </i>`,
+                tooltip: '下一集',
+                click: () => this.playNextEpisode()
+            });
+        }
+
+        return controls;
+    }
+
+    /**
      * 初始化播放器
      * @param {HTMLElement} container - 容器元素
      * @param {VideoItem} videoData - 视频数据
@@ -326,7 +394,7 @@ class VideoPlayerManager {
             mutex: true,
             backdrop: true,
             playsInline: false,
-            autoPlayback: true,
+            autoPlayback: false,
             airplay: true,
             theme: '#007bff',
             lang: 'zh-cn',
@@ -364,45 +432,34 @@ class VideoPlayerManager {
                     }
                 }
             ] : [],
-            // 添加上一集/下一集控件
-            controls: [
-                {
-                    name: 'last',
-                    index: 5,
-                    position: 'left',
-                    html: `<i class="art-icon">
-                            <svg width="22" height="22" viewBox="0 0 16 16">
-                                <path d="M4 4a.5.5 0 0 1 1 0v3.248l6.267-3.636c.54-.313 1.232.066 1.232.696v7.384c0 .63-.692 1.01-1.232.697L5 8.753V12a.5.5 0 0 1-1 0V4z"/>
-                            </svg>
-                        </i>`,
-                    tooltip: '上一个视频',
-                    click: () => this.playPrevEpisode()
-                }, {
-                    name: 'next',
-                    index: 20,
-                    position: 'left',
-                    html: `<i class="art-icon">
-                            <svg width="22" height="22" viewBox="0 0 16 16">
-                                <path d="M12.5 4a.5.5 0 0 0-1 0v3.248L5.233 3.612C4.693 3.3 4 3.678 4 4.308v7.384c0 .63.692 1.01 1.233.697L11.5 8.753V12a.5.5 0 0 0 1 0V4z"/>
-                            </svg>
-                        </i>`,
-                    tooltip: '下一个视频',
-                    click: () => this.playNextEpisode()
-                }
-            ]
+            // 添加上一集/下一集控件（根据是否有上下集动态显示）
+            controls: this.buildPlayerControls(options.episodes || [], this.currentEpisodeIndex)
         });
 
-        // 如果有开始时间，跳转到对应位置
-        if (options.startTime) {
-            this.player.on('video:loadedmetadata', () => {
-                this.player.currentTime = options.startTime;
-                this.player.play();
-            });
-        } else {
-            this.player.on('video:loadedmetadata', () => {
-                this.player.play();
-            });
-        }
+        // 手动跳转到指定位置（禁用artplayer的autoPlayback，自己控制）
+        const startTime = options.startTime || 0;
+        let hasSeeked = false;
+
+        this.player.on('video:loadedmetadata', () => {
+            // 确保视频总时长被记录
+            const duration = this.player.duration;
+            if (duration && this.currentEpisodeId) {
+                // 更新进度记录中的总时长
+                const progress = this.progress.progressData[this.currentEpisodeId];
+                if (progress) {
+                    progress.duration = duration;
+                    this.progress.saveProgress();
+                }
+            }
+        });
+
+        this.player.on('video:canplay', () => {
+            if (!hasSeeked && startTime > 0) {
+                hasSeeked = true;
+                this.player.currentTime = startTime;
+            }
+            this.player.play();
+        });
 
         // 监听播放进度，保存到localStorage
         let lastSaveTime = 0;

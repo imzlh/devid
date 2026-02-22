@@ -975,17 +975,27 @@ class VideoManager {
         
         recent.forEach(item => {
             const card = DOMHelper.create('div', 'video-card recent-watch-card');
-            const progressPercent = item.duration > 0 
-                ? Math.min(100, Math.round((item.progress / item.duration) * 100)) 
+
+            // 从历史记录获取总时长，如果没有则尝试从播放进度记录获取
+            let duration = item.duration || 0;
+            if (!duration && item.id) {
+                const progressData = this.progressManager?.progressData?.[item.id];
+                if (progressData?.duration) {
+                    duration = progressData.duration;
+                }
+            }
+
+            const progressPercent = duration > 0
+                ? Math.min(100, Math.round((item.progress / duration) * 100))
                 : 0;
-            
+
             card.innerHTML = `
                 <div class="video-thumbnail">
-                    <img src="${item.thumbnail || Utils.getDefaultThumbnail()}" 
-                         alt="${item.title}" 
+                    <img src="${item.thumbnail || Utils.getDefaultThumbnail()}"
+                         alt="${item.title}"
                          loading="lazy"
                          onerror="this.src='${Utils.getDefaultThumbnail()}'">
-                    <div class="video-duration">${Utils.formatDuration(item.progress)} / ${Utils.formatDuration(item.duration)}</div>
+                    <div class="video-duration">${Utils.formatDuration(item.progress)} / ${duration ? Utils.formatDuration(duration) : '未知'}</div>
                     <div class="watch-progress-bar" style="width: ${progressPercent}%"></div>
                     <div class="video-actions-overlay">
                         <button class="btn btn-large btn-primary video-resume-btn" title="继续观看">
@@ -1206,13 +1216,22 @@ class VideoManager {
             card.classList.add('portrait-card');
         }
         
+        // 尝试从播放记录获取视频时长
+        let duration = video.duration;
+        if (!duration && video.id) {
+            const progress = app.progressManager?.getVideoProgressWithMeta?.(video.id);
+            if (progress?.duration) {
+                duration = Utils.formatDuration(progress.duration);
+            }
+        }
+
         card.innerHTML = `
             <div class="video-thumbnail" data-ratio="${aspectRatio}">
                 <img src="${thumbnailUrl}"
                      alt="${video.title}"
                      loading="lazy"
                      onerror="this.src='${Utils.getDefaultThumbnail()}'">
-                <div class="video-duration">${video.duration || '未知'}</div>
+                <div class="video-duration">${duration || '未知'}</div>
                 ${badgeHtml}
                 ${progressBadge}
                 <div class="video-actions-overlay">
@@ -1865,7 +1884,7 @@ class VideoManager {
             }
             
             // 绑定全屏
-            const fullscreenBtn = videoPlayer.querySelector('#artFullScreen');
+            const fullscreenBtn = DOMHelper.$('#artFullScreen');
             if (fullscreenBtn) {
                 DOMHelper.on(fullscreenBtn, 'click', () => this.playerManager.player.fullscreen = true);
             }
