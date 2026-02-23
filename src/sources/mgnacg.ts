@@ -2,6 +2,11 @@ import assert from "node:assert";
 import { fetch2, getDocument, getImage } from "../utils/fetch.ts";
 import { BaseVideoSource, ImageData } from "./index.ts";
 import { IVideoList, IVideoItem, IVideoURL, ISeriesResult, IEpisode, URLProxy } from "../types/index.ts";
+import { captcha } from "../utils/captcha.ts";
+import console from "node:console";
+import { Document } from "dom";
+import { md5 } from "@takker/md5";
+import { decodeBase64, decodeHex, encodeHex } from "@std/encoding";
 
 interface ISource {
     show: string;   // 源备注
@@ -42,7 +47,7 @@ interface IVideoRes {
 export class CommonAPI {
     private $source: Record<string, ISource> = {};
 
-    constructor(private $config: string = 'https://www.akianime.com/static/js/playerconfig.js') { }
+    constructor(private $config: string = 'https://www.mgnacg.com/static/js/playerconfig.js') { }
 
     async init() {
         const scrctx = await (await fetch2(this.$config)).text();
@@ -58,14 +63,50 @@ export class CommonAPI {
         return source.parse;
     }
 
+    private async decryptURL(url: string, doc: Document) {
+        const key1 = doc.querySelector('meta[name="viewport"]')
+            ?.id?.replace('now_', '');
+        const key2 = doc.querySelector('meta[charset="UTF-8"]')
+            ?.id?.replace('now_', '');
+        assert(key1 && key2, `Failed to decrypt url ${url}`);
+
+        // 按key2排序
+        const keys = new Array(key2.length);
+        for (let i = 0; i < key2.length; i++) {
+            keys[i] = key1[parseInt(key2[i])];
+        }
+        const md5Hex = encodeHex(md5(keys.join('') + "Mknacg123321"));  // 32字符
+        const keyStr = md5Hex.substring(16);   // 16字符字符串
+        const ivStr = md5Hex.substring(0, 16); // 16字符字符串
+        const key = new TextEncoder().encode(keyStr);  // Uint8Array(16)
+        const iv = new TextEncoder().encode(ivStr);    // Uint8Array(16)
+        const ciphertext = decodeBase64(url);
+
+        const cryptoKey = await crypto.subtle.importKey(
+            'raw',
+            key,
+            { name: 'AES-CBC', length: 128 },  // 16字节 = 128位
+            false,
+            ['decrypt']
+        );
+
+        const decrypted = await crypto.subtle.decrypt(
+            { name: 'AES-CBC', iv },
+            cryptoKey,
+            ciphertext
+        );
+
+        return new TextDecoder().decode(decrypted);
+    }
+
     async getVideoUrl(info: IPlayerInfo) {
         const src = this.getPlayer(info);
         let url;
         if (info.encrypt == 1) {
             url = unescape(info.url);
         } else if (info.encrypt == 2) {
-            url = unescape(atob(info.url));
-        } else if (info.encrypt == 0) {
+            //     url = unescape(atob(info.url));
+            // } else if (info.encrypt == 0) {
             url = info.url;
         } else {
             throw new Error(`Unknown encrypt type ${info.encrypt}`);
@@ -76,34 +117,18 @@ export class CommonAPI {
         const config = await new Promise<IVideoRes>(rs => {
             new Function('player', scr!)(rs);
         });
-        const apir = await fetch2(new URL('api_config.php', src), {
-            method: 'POST',
-            body: new URLSearchParams({ 
-                "url": config.url, 
-                "time": config.time.toString(), 
-                "key": config.key, 
-                "title": config.title 
-            }),
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded'
-            }
-        }).then(e => e.json());
-        if (apir.code != '200') {
-            throw new Error(`Failed to get video url from ${src}: ${apir.msg}`);
-        }
-
-        return apir as {
-            url: string;
-            type: 'hls' | string;
+        return {
+            url: await this.decryptURL(config.url, doc)
         };
     }
 }
+
 
 export default class AkiAnimeAPI extends BaseVideoSource {
     private $api: CommonAPI = new CommonAPI();
 
     constructor() {
-        super('akianime', 'AkiAnime', 'https://www.akianime.com', true);
+        super('mgnacg', '橘子动漫', 'https://www.mgnacg.com', true);
         this.imageAspectRatio = '9/16';
     }
 
@@ -118,7 +143,7 @@ export default class AkiAnimeAPI extends BaseVideoSource {
             const link = el.getElementsByTagName('a')?.[0];
             const image = el.getElementsByTagName('img')?.[0];
             if (!link || !image) continue;
-            const match = link.getAttribute('href')?.match(/\/bgmdetail\/([A-Za-z0-9]+)\.html/);
+            const match = link.getAttribute('href')?.match(/\/media\/([A-Za-z0-9]+)\/?/);
             if (!match) continue;
             vid.push({
                 thumbnail: new URL(image.getAttribute('data-src')!, this.baseUrl).href,
@@ -138,7 +163,7 @@ export default class AkiAnimeAPI extends BaseVideoSource {
 
     override async getSeries(seriesId: string, url?: string): Promise<ISeriesResult | null> {
         // 优先使用传入的URL，否则根据ID构造URL
-        const pageUrl = url ?? new URL(`/bgmdetail/${seriesId}.html`, this.baseUrl).href;
+        const pageUrl = url ?? new URL(`/media/${seriesId}/`, this.baseUrl).href;
         const doc = await getDocument(pageUrl);
         const ser: IEpisode[] = [];
         let total = 0;
@@ -147,7 +172,7 @@ export default class AkiAnimeAPI extends BaseVideoSource {
             for (const el of group.children) {
                 const link = el.getElementsByTagName('a')?.[0]!;
                 // /bgmplay/cEcDDE-1-1.html
-                const match = link.getAttribute('href')?.match(/\/bgmplay\/([A-Za-z0-9]+-[0-9]+-[0-9]+)\.html/);
+                const match = link.getAttribute('href')?.match(/\/bangumi\/([A-Za-z0-9]+-[0-9]+-[0-9]+)\/?/);
                 if (!match) continue;
                 ser.push({
                     url: new URL(link.getAttribute('href')!, this.baseUrl).href,
@@ -184,7 +209,29 @@ export default class AkiAnimeAPI extends BaseVideoSource {
     }
 
     override async searchVideos(query: string, page?: number): Promise<IVideoList> {
-        const doc = await getDocument(new URL(`/bgmsearch/${encodeURIComponent(query)}----------${page}---.html`, this.baseUrl));
+        const doc = await getDocument(new URL(`/search/${encodeURIComponent(query)}----------${page}---/`, this.baseUrl));
+        const verify = doc.querySelector('img.ds-verify-img[src]');
+        let verifyMessage = '搜索需要验证码'
+        while (verify) {
+            const code = await captcha({
+                prompt: verifyMessage,
+                imageUrl: new URL(verify.getAttribute('src')!, this.baseUrl).href
+            })
+            const res = await fetch2(new URL('/index.php/ajax/verify_check?type=search&verify=' + code, this.baseUrl), {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: ""
+            }).then(r => r.text());
+            if (res.length) {
+                const message = JSON.parse(res);
+                verifyMessage = message.msg;
+            } else {
+                return this.searchVideos(query, page);
+            }
+        }
+
         const res: IVideoItem[] = [];
         for (const el of doc.querySelectorAll('.vod-detail')) {
             const link = el.querySelector('a[target="_blank"]');
@@ -223,7 +270,7 @@ export default class AkiAnimeAPI extends BaseVideoSource {
         return [{
             quality: '1080p',
             url: inf.url,
-            format: inf.type === 'hls'? 'm3u8' : 'h5',
+            format: 'h5',   // 这个源没有用hls的
             proxy: URLProxy.NONE
         }];
     }
