@@ -14,7 +14,6 @@ import {
 import { getConfig, createDefaultConfig } from "./config/index.ts";
 import { rpcServer } from "./websocket/rpc.ts";
 import { pushDownloadUpdate, pushSourceChange } from "./websocket/push.ts";
-import { apiCache } from "./utils/cache.ts";
 
 // 初始化配置（自动创建默认配置文件）
 await createDefaultConfig();
@@ -569,6 +568,54 @@ app.post("/api/captcha/cancel", async (c) => {
     } catch (error) {
         logError("取消验证码失败:", error);
         return c.json({ error: "取消验证码失败" }, 500);
+    }
+});
+
+// 获取验证码图片（服务器中转，解决 CORS 问题）
+app.get("/api/captcha/image", async (c) => {
+    try {
+        const requestId = c.req.query("requestId");
+
+        if (!requestId) {
+            logWarn("获取验证码图片失败: 缺少 requestId");
+            return c.json({ error: "缺少 requestId 参数" }, 400);
+        }
+
+        // 获取原始图片 URL
+        const { getCaptchaImageUrl } = await import("./utils/captcha.ts");
+        const imageUrl = getCaptchaImageUrl(requestId);
+
+        if (!imageUrl) {
+            logWarn(`获取验证码图片失败: 无效的 requestId: ${requestId}`);
+            return c.json({ error: "无效的验证码请求" }, 404);
+        }
+
+        logDebug(`代理验证码图片: ${requestId} -> ${imageUrl}`);
+
+        // 使用 fetch2 获取图片（自动处理 cookie）
+        const response = await fetch2(imageUrl, {
+            headers: {
+                "Accept": "image/*,*/*",
+                "Referer": imageUrl,
+            },
+        });
+
+        if (!response.ok) {
+            logError(`获取验证码图片失败: ${response.status} ${response.statusText}`);
+            return c.json({ error: "获取验证码图片失败" }, 502);
+        }
+
+        // 获取图片数据
+        const imageBuffer = await response.arrayBuffer();
+        const contentType = response.headers.get("content-type") || "image/png";
+
+        // 返回图片数据
+        c.header("Content-Type", contentType);
+        c.header("Cache-Control", "no-cache, no-store, must-revalidate");
+        return c.body(imageBuffer);
+    } catch (error) {
+        logError("获取验证码图片失败:", error);
+        return c.json({ error: "获取验证码图片失败" }, 500);
     }
 });
 

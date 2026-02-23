@@ -110,7 +110,7 @@ export default class AowuAnime extends BaseVideoSource {
     }
 
     override async searchVideos(query: string, page?: number): Promise<IVideoList> {
-        let doc = await getDocument(new URL(`/anime/vod/?wd=${query}&page=${page ?? 1}`, this.baseUrl));
+        let doc = await getDocument(new URL(`/vods/?wd=${query}&page=${page ?? 1}`, this.baseUrl));
         const res: IVideoItem[] = [];
 
         // check verify

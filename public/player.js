@@ -606,10 +606,10 @@ class VideoPlayerManager {
                 let extname = new URL(quality.url).pathname.split('.').pop() || 'mp4';
                 if (extname.includes('/') || extname.length >= 5)
                     extname = 'mp4';
-                url.pathname = `/api/proxy/video.${extname}`;
+                url.pathname = `api/proxy/video.${extname}`;
             } else {
                 // M3U8使用代理
-                url.pathname = `/api/proxy/video.m3u8`;
+                url.pathname = `api/proxy/video.m3u8`;
             }
             url.searchParams.set('url', quality.url);
             url.searchParams.set('source', this.currentVideo.source);

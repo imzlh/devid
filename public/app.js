@@ -298,18 +298,26 @@ class VideoManager {
      * @param {Object} data - 验证码请求数据
      */
     handleCaptchaRequired(data) {
-        const { requestId, imageUrl, prompt } = data;
+        // 后端提供完整的验证码页面 URL，前端直接使用
+        const { captchaPageUrl } = data;
 
-        // 构建验证码页面 URL
-        const captchaUrl = `/captcha.html?requestId=${encodeURIComponent(requestId)}&imageUrl=${encodeURIComponent(imageUrl)}&prompt=${encodeURIComponent(prompt || '请输入验证码')}`;
+        if (!captchaPageUrl) {
+            console.error('验证码请求缺少 captchaPageUrl');
+            return;
+        }
 
         // 使用 iframe 显示验证码
         const overlay = DOMHelper.$('#captchaOverlay');
         const iframe = DOMHelper.$('#captchaIframe');
 
         if (overlay && iframe) {
-            iframe.src = captchaUrl;
+            iframe.src = captchaPageUrl;
             DOMHelper.show(overlay);
+            overlay.onclick = (e) => {
+                if (e.target === overlay) {
+                    this.closeCaptchaOverlay();
+                }
+            };
         }
     }
 
@@ -323,6 +331,7 @@ class VideoManager {
         if (overlay && iframe) {
             iframe.src = 'about:blank';
             DOMHelper.hide(overlay);
+            overlay.onclick = null;
         }
     }
 
@@ -975,27 +984,17 @@ class VideoManager {
         
         recent.forEach(item => {
             const card = DOMHelper.create('div', 'video-card recent-watch-card');
-
-            // 从历史记录获取总时长，如果没有则尝试从播放进度记录获取
-            let duration = item.duration || 0;
-            if (!duration && item.id) {
-                const progressData = this.progressManager?.progressData?.[item.id];
-                if (progressData?.duration) {
-                    duration = progressData.duration;
-                }
-            }
-
-            const progressPercent = duration > 0
-                ? Math.min(100, Math.round((item.progress / duration) * 100))
+            const progressPercent = item.duration > 0 
+                ? Math.min(100, Math.round((item.progress / item.duration) * 100)) 
                 : 0;
-
+            
             card.innerHTML = `
                 <div class="video-thumbnail">
-                    <img src="${item.thumbnail || Utils.getDefaultThumbnail()}"
-                         alt="${item.title}"
+                    <img src="${item.thumbnail || Utils.getDefaultThumbnail()}" 
+                         alt="${item.title}" 
                          loading="lazy"
                          onerror="this.src='${Utils.getDefaultThumbnail()}'">
-                    <div class="video-duration">${Utils.formatDuration(item.progress)} / ${duration ? Utils.formatDuration(duration) : '未知'}</div>
+                    <div class="video-duration">${Utils.formatDuration(item.progress)} / ${Utils.formatDuration(item.duration)}</div>
                     <div class="watch-progress-bar" style="width: ${progressPercent}%"></div>
                     <div class="video-actions-overlay">
                         <button class="btn btn-large btn-primary video-resume-btn" title="继续观看">
@@ -1152,25 +1151,14 @@ class VideoManager {
     renderVideoGrid(videos, containerId) {
         const container = DOMHelper.$(`#${containerId}`);
         if (!container) return;
-
+        
         container.innerHTML = '';
-
+        
         if (!videos || videos.length === 0) {
             container.innerHTML += '<div class="text-center">暂无视频</div>';
             return;
         }
-
-        // 根据图片比例调整 grid 列宽
-        const aspectRatio = this.currentSource?.imageAspectRatio || '16/9';
-        const [w, h] = aspectRatio.split('/').map(Number);
-        const ratio = w / h;
-        if (ratio < 1) {
-            // 竖屏图片使用更小的列宽
-            container.style.gridTemplateColumns = 'repeat(auto-fill, minmax(160px, 1fr))';
-        } else {
-            container.style.gridTemplateColumns = '';
-        }
-
+        
         videos.forEach(video => {
             const videoCard = this.createVideoCard(video);
             container.appendChild(videoCard);
@@ -1208,30 +1196,13 @@ class VideoManager {
 
         // 获取当前源的图片比例
         const aspectRatio = this.currentSource?.imageAspectRatio || '16/9';
-        
-        // 根据宽高比添加 CSS 类，用于调整 grid 列宽
-        const [w, h] = aspectRatio.split('/').map(Number);
-        const ratio = w / h;
-        if (ratio < 1) {
-            card.classList.add('portrait-card');
-        }
-        
-        // 尝试从播放记录获取视频时长
-        let duration = video.duration;
-        if (!duration && video.id) {
-            const progress = app.progressManager?.getVideoProgressWithMeta?.(video.id);
-            if (progress?.duration) {
-                duration = Utils.formatDuration(progress.duration);
-            }
-        }
-
         card.innerHTML = `
             <div class="video-thumbnail" data-ratio="${aspectRatio}">
                 <img src="${thumbnailUrl}"
                      alt="${video.title}"
                      loading="lazy"
                      onerror="this.src='${Utils.getDefaultThumbnail()}'">
-                <div class="video-duration">${duration || '未知'}</div>
+                <div class="video-duration">${video.duration || '未知'}</div>
                 ${badgeHtml}
                 ${progressBadge}
                 <div class="video-actions-overlay">
@@ -1884,7 +1855,7 @@ class VideoManager {
             }
             
             // 绑定全屏
-            const fullscreenBtn = DOMHelper.$('#artFullScreen');
+            const fullscreenBtn = videoPlayer.querySelector('#artFullScreen');
             if (fullscreenBtn) {
                 DOMHelper.on(fullscreenBtn, 'click', () => this.playerManager.player.fullscreen = true);
             }
@@ -2516,6 +2487,9 @@ class VideoManager {
         const loading = DOMHelper.$('#loading');
         if (loading) {
             DOMHelper.show(loading);
+            loading.onclick = () => {
+                this.hideLoading();
+            };
         }
     }
     
@@ -2526,6 +2500,7 @@ class VideoManager {
         const loading = DOMHelper.$('#loading');
         if (loading) {
             DOMHelper.hide(loading);
+            loading.onclick = null;
         }
     }
 

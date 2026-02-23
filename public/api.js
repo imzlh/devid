@@ -196,7 +196,7 @@ class APIManager {
      * @returns {Promise<{sources: VideoSource[]}>}
      */
     async getSources() {
-        return this.call('sources.getAll', [], '/api/sources');
+        return this.call('sources.getAll', [], 'api/sources');
     }
 
     /**
@@ -205,7 +205,7 @@ class APIManager {
      * @returns {Promise<any>}
      */
     async setActiveSource(source) {
-        return this.call('sources.setActive', [source], '/api/sources/active', {
+        return this.call('sources.setActive', [source], 'api/sources/active', {
             method: 'POST',
             body: JSON.stringify({ id: source })
         });
@@ -216,7 +216,7 @@ class APIManager {
      * @returns {Promise<VideoSource>}
      */
     async getActiveSource() {
-        return this.call('sources.getActive', [], '/api/sources/active');
+        return this.call('sources.getActive', [], 'api/sources/active');
     }
     
     // 视频内容API
@@ -226,7 +226,7 @@ class APIManager {
      * @returns {Promise<{videos: VideoItem[], currentPage: number, totalPages: number}>}
      */
     async getHomeVideos(page = 1) {
-        return this.call('videos.getHome', [page], `/api/home-videos?page=${page}`);
+        return this.call('videos.getHome', [page], `api/home-videos?page=${page}`);
     }
 
     /**
@@ -237,7 +237,7 @@ class APIManager {
      */
     async getSeriesDetail(seriesId, url) {
         const urlParam = url ? `?url=${encodeURIComponent(url)}` : '';
-        return this.call('series.getDetail', [seriesId, url], '/api/series/' + seriesId + urlParam);
+        return this.call('series.getDetail', [seriesId, url], 'api/series/' + seriesId + urlParam);
     }
 
     /**
@@ -246,7 +246,7 @@ class APIManager {
      * @returns {Promise<{episodes: Array<{id: string, title: string, url: string}>}>}
      */
     async getSeries(seriesId) {
-        return this.call('series.getVideos', [seriesId], '/api/series/' + seriesId + '/videos');
+        return this.call('series.getVideos', [seriesId], 'api/series/' + seriesId + '/videos');
     }
 
     /**
@@ -256,7 +256,7 @@ class APIManager {
      * @returns {Promise<{videos: VideoItem[], currentPage: number, totalPages: number}>}
      */
     async searchVideos(query, page = 1) {
-        return this.call('videos.search', [query, page], `/api/search?q=${encodeURIComponent(query)}&page=${page}`);
+        return this.call('videos.search', [query, page], `api/search?q=${encodeURIComponent(query)}&page=${page}`);
     }
 
     /**
@@ -266,7 +266,7 @@ class APIManager {
      * @returns {Promise<{results: M3U8Result[]}>}
      */
     async parseVideo(url, source) {
-        return this.call('videos.parse', [url], '/api/parse-video', {
+        return this.call('videos.parse', [url], 'api/parse-video', {
             method: 'POST',
             body: JSON.stringify({ url, source })
         });
@@ -281,7 +281,7 @@ class APIManager {
      * @returns {Promise<{task: DownloadTask}>}
      */
     async createDownload(title, m3u8Url, outputPath, referer) {
-        return this.call('downloads.create', [title, m3u8Url, outputPath, referer], '/api/downloads', {
+        return this.call('downloads.create', [title, m3u8Url, outputPath, referer], 'api/downloads', {
             method: 'POST',
             body: JSON.stringify({ title, url: m3u8Url, outputPath, referer })
         });
@@ -293,7 +293,7 @@ class APIManager {
      * @returns {Promise<any>}
      */
     async startDownload(id) {
-        return this.call('downloads.start', [id], `/api/downloads/${id}/start`, {
+        return this.call('downloads.start', [id], `api/downloads/${id}/start`, {
             method: 'POST'
         });
     }
@@ -303,7 +303,7 @@ class APIManager {
      * @returns {Promise<{tasks: DownloadTask[]}>}
      */
     async getDownloads() {
-        return this.call('downloads.getAll', [], '/api/downloads');
+        return this.call('downloads.getAll', [], 'api/downloads');
     }
 
     /**
@@ -312,7 +312,7 @@ class APIManager {
      * @returns {Promise<any>}
      */
     async cancelDownload(id) {
-        return this.call('downloads.cancel', [id], `/api/downloads/${id}/cancel`, {
+        return this.call('downloads.cancel', [id], `api/downloads/${id}/cancel`, {
             method: 'POST'
         });
     }
@@ -323,7 +323,7 @@ class APIManager {
      * @returns {Promise<any>}
      */
     async retryDownload(id) {
-        return this.call('downloads.retry', [id], `/api/downloads/${id}/retry`, {
+        return this.call('downloads.retry', [id], `api/downloads/${id}/retry`, {
             method: 'POST'
         });
     }
@@ -333,7 +333,7 @@ class APIManager {
      * @returns {Promise<any>}
      */
     async clearCompletedDownloads() {
-        return this.call('downloads.clearCompleted', [], '/api/downloads/clear-completed', {
+        return this.call('downloads.clearCompleted', [], 'api/downloads/clear-completed', {
             method: 'POST'
         });
     }
@@ -343,7 +343,7 @@ class APIManager {
      * @returns {Promise<any>}
      */
     async healthCheck() {
-        return this.call('health.get', [], '/api/health');
+        return this.call('health.get', [], 'api/health');
     }
     
     /**
@@ -354,7 +354,7 @@ class APIManager {
      */
     getProxyUrl(url, source) {
         const filename = url.split('/').pop();
-        return `/api/proxy/${filename}?url=${encodeURIComponent(url)}${source ? `&source=${source}` : ''}&referer=${encodeURIComponent(url)}`;
+        return `api/proxy/${filename}?url=${encodeURIComponent(url)}${source ? `&source=${source}` : ''}&referer=${encodeURIComponent(url)}`;
     }
     
     /**
@@ -364,6 +364,6 @@ class APIManager {
      * @returns {string}
      */
     getImageProxyUrl(url, source) {
-        return `/api/image-proxy?url=${encodeURIComponent(url)}&source=${source}`;
+        return `api/image-proxy?url=${encodeURIComponent(url)}&source=${source}`;
     }
 }

@@ -16,9 +16,8 @@ import { rpcServer } from "../websocket/rpc.ts";
 // 验证码请求
 interface CaptchaRequest {
     id: string;
-    imageUrl: string;
+    imageUrl: string;       // 原始验证码图片 URL（用于后端获取）
     prompt: string;
-    cookies?: string;  // 关联的 Cookie
     resolve: (answer: string) => void;
     reject: (error: Error) => void;
     timeout: number;
@@ -29,8 +28,15 @@ interface CaptchaRequest {
 interface CaptchaOptions {
     imageUrl: string;       // 验证码图片 URL
     prompt?: string;        // 提示文字
-    cookies?: string;       // 关联的 Cookie
     timeout?: number;       // 超时时间（毫秒），默认 5 分钟
+}
+
+// 验证码响应（返回给前端的结构）
+export interface CaptchaResponse {
+    requestId: string;
+    captchaPageUrl: string;  // 完整的验证码页面 URL
+    prompt: string;
+    createdAt: number;
 }
 
 // 默认超时时间：5 分钟
@@ -40,10 +46,11 @@ const DEFAULT_TIMEOUT = 5 * 60 * 1000;
 const pendingRequests = new Map<string, CaptchaRequest>();
 
 /**
- * 生成唯一 ID
+ * 构建验证码页面 URL
  */
-function generateId(): string {
-    return `captcha_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+function buildCaptchaPageUrl(requestId: string): string {
+    // 后端提供完整的验证码页面 URL
+    return `/captcha.html?requestId=${encodeURIComponent(requestId)}`;
 }
 
 /**
@@ -51,9 +58,10 @@ function generateId(): string {
  */
 function pushCaptchaRequest(request: CaptchaRequest): void {
     logDebug(`推送验证码请求: ${request.id}`);
+    const captchaPageUrl = buildCaptchaPageUrl(request.id);
     rpcServer.broadcast("captcha:required", {
         requestId: request.id,
-        imageUrl: request.imageUrl,
+        captchaPageUrl: captchaPageUrl,
         prompt: request.prompt || "请输入验证码",
         createdAt: request.createdAt
     });
@@ -65,9 +73,9 @@ function pushCaptchaRequest(request: CaptchaRequest): void {
  * @returns 用户输入的验证码
  */
 export async function captcha(options: CaptchaOptions): Promise<string> {
-    const { imageUrl, prompt, cookies, timeout = DEFAULT_TIMEOUT } = options;
+    const { imageUrl, prompt, timeout = DEFAULT_TIMEOUT } = options;
 
-    const id = generateId();
+    const id = crypto.randomUUID();
 
     logInfo(`创建验证码请求: ${id}`);
 
@@ -76,7 +84,6 @@ export async function captcha(options: CaptchaOptions): Promise<string> {
             id,
             imageUrl,
             prompt: prompt || "请输入验证码",
-            cookies,
             resolve,
             reject,
             timeout,
@@ -170,6 +177,16 @@ export function cancelCaptcha(requestId: string, reason: string): boolean {
     });
 
     return true;
+}
+
+/**
+ * 获取验证码图片 URL（用于服务器中转）
+ * @param requestId 请求 ID
+ * @returns 原始图片 URL 或 null
+ */
+export function getCaptchaImageUrl(requestId: string): string | null {
+    const request = pendingRequests.get(requestId);
+    return request?.imageUrl || null;
 }
 
 /**
