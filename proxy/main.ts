@@ -25,7 +25,8 @@ async function handle(req: Request) {
     const request = new Request(url, {
         method: req.method,
         headers: header,
-        body: req.body
+        body: req.body,
+        redirect: 'manual'
     });
     try{
         return await fetch(request);
