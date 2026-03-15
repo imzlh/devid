@@ -182,7 +182,7 @@ export async function fetch2(
             return enhancedResponse as FetchResponse;
         } catch (error) {
             if (options.noRetry || options?.signal?.aborted) throw error;
-            else logError(`Request failed, retry ${redirectCount + 1}: ${error}`);
+            else logError(`Request failed, retry ${redirectCount += 1}: ${error}`);
         }
     }
 

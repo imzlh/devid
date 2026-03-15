@@ -94,12 +94,14 @@ export class VideoSourceManager {
 
         let successCount = 0;
         let failCount = 0;
+        const successfulSources: string[] = [];
 
         results.forEach((result, index) => {
             const wrapper = Array.from(this.sources.values())[index];
             if (result.status === 'fulfilled' && result.value) {
                 successCount++;
                 wrapper.initialized = true;
+                successfulSources.push(wrapper.id);
             } else {
                 failCount++;
                 wrapper.lastError = result.status === 'rejected'
@@ -108,6 +110,18 @@ export class VideoSourceManager {
                 logError(`视频源 ${wrapper.id} 初始化失败:`, wrapper.lastError);
             }
         });
+
+        // 如果当前活动源初始化失败，自动切换到第一个成功的源
+        if (this.activeSourceId && !this.sources.get(this.activeSourceId)?.initialized) {
+            if (successfulSources.length > 0) {
+                const newActiveId = successfulSources[0];
+                this.activeSourceId = newActiveId;
+                logInfo(`活动视频源自动切换到: ${newActiveId}（原源初始化失败）`);
+            } else {
+                this.activeSourceId = null;
+                logWarn('没有可用的视频源');
+            }
+        }
 
         logInfo(`视频源初始化完成: ${successCount} 成功, ${failCount} 失败`);
     }
@@ -160,9 +174,31 @@ export class VideoSourceManager {
     }
 
     /**
-     * 获取健康状态
+     * 获取健康状态（只返回健康的源）
      */
     getHealthStatus(): Record<string, ISourceHealth> {
+        const status: Record<string, ISourceHealth> = {};
+        for (const [id, wrapper] of this.sources) {
+            // 只返回健康的源
+            if (!wrapper.initialized) {
+                continue;
+            }
+            status[id] = {
+                status: 'healthy',
+                lastCheck: 0,
+                consecutiveFailures: 0,
+                circuitOpen: false,
+                circuitOpenUntil: 0,
+                lastError: undefined
+            };
+        }
+        return status;
+    }
+
+    /**
+     * 获取所有源的健康状态（包括失败的，仅内部使用）
+     */
+    getHealthStatusInternal(): Record<string, ISourceHealth> {
         const status: Record<string, ISourceHealth> = {};
         for (const [id, wrapper] of this.sources) {
             status[id] = {
@@ -183,7 +219,43 @@ export class VideoSourceManager {
         this.sources.set(source.getId(), new SourceWrapper(source));
     }
 
+    /**
+     * 获取所有健康的视频源（初始化成功的）
+     * 失败的视频源对前端不可见
+     */
     getAllSources(): ISource[] {
+        const sources: ISource[] = [];
+
+        for (const [id, wrapper] of this.sources) {
+            // 只返回初始化成功的视频源
+            if (!wrapper.initialized) {
+                continue;
+            }
+
+            sources.push({
+                id,
+                name: wrapper.name,
+                baseUrl: wrapper.source.base || '',
+                enabled: true,
+                imageAspectRatio: wrapper.source.getImageAspectRatio(),
+                health: {
+                    status: 'healthy',
+                    lastCheck: 0,
+                    consecutiveFailures: 0,
+                    circuitOpen: false,
+                    circuitOpenUntil: 0,
+                    lastError: undefined
+                }
+            });
+        }
+
+        return sources;
+    }
+
+    /**
+     * 获取所有视频源（包括失败的，仅内部使用）
+     */
+    getAllSourcesInternal(): ISource[] {
         const sources: ISource[] = [];
 
         for (const [id, wrapper] of this.sources) {
@@ -212,9 +284,19 @@ export class VideoSourceManager {
         return this.sources.get(this.activeSourceId)?.source || null;
     }
 
+    /**
+     * 设置活动视频源
+     * 只能切换到初始化成功的视频源
+     */
     setActiveSource(sourceId: string): boolean {
         const wrapper = this.sources.get(sourceId);
         if (!wrapper) return false;
+
+        // 只能切换到初始化成功的视频源
+        if (!wrapper.initialized) {
+            logWarn(`无法切换到未初始化的视频源: ${sourceId}`);
+            return false;
+        }
 
         this.activeSourceId = sourceId;
         logInfo(`活动视频源已切换为: ${sourceId}`);
