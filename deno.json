@@ -16,7 +16,7 @@
     "@hono/node-ws": "npm:@hono/node-ws@^1.1.0",
     "dom": "jsr:@b-fuze/deno-dom@^0.1.44",
     "jsencrypt": "https://cdn.jsdelivr.net/npm/jsencrypt@3.5.4/+esm"
-  }
+  },
   "nodeModulesDir": "auto",
   "unstable": [
     "kv"

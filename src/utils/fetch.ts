@@ -75,7 +75,20 @@ export async function getDocument(
     return parser.parseFromString(html, "text/html");
 }
 
+let gfw: boolean = false;
+try {
+    const sig = new AbortController();
+    setTimeout(() => sig.abort(), 1000);
+    const res = await fetch('https://g.co', {
+        signal: sig.signal
+    });
+    assert(res.status == 200, "g.co is not accessible");
+} catch {
+    logWarn("你正在中国内网访问，建议设置代理服务器加速访问，部分资源内网无法访问");
+    gfw = true;
+}
 export async function useProxy(url: string | URL, options: FetchOptions = {}) {
+    if (!gfw) return fetch(url, options);
     assert(config.get().proxy.gateway, 'Proxy gateway is not configured');
     const headers = new Headers(options.headers);
     headers.set('X-Proxy-Destination', encodeBase64(String(url)));

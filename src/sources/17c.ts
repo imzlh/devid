@@ -12,7 +12,9 @@ interface IVideo {
     eye: number,
     id: number,
     name: string,
-    time: string
+    time: string,
+    is_yp?: boolean;    // is ads
+    href?: string;      // ads only
 }
 
 interface IHome {
@@ -129,23 +131,29 @@ export default class C17VideoSource extends BaseVideoSource {
 
         try {
             // 首先尝试 APP 入口
-            const appDoc = await getDocument(APP_ENTRY_LINK);
-            const iframe = appDoc.querySelector('iframe[src]');
-            if (iframe) {
-                const addr = iframe.getAttribute('src');
-                if (addr) {
-                    const aurl = new URL(addr, APP_ENTRY_LINK);
-                    try {
-                        await fetch2(aurl, { timeout: 5000 });
-                        this.rawHost = aurl.hostname;
-                        this.baseUrl = aurl.href;
-                        logInfo(`通过 APP 入口解析到域名: ${this.baseUrl} `);
-                        await this.postInit()
-                        return;
-                    } catch (e) {
-                        logWarn('APP 入口请求失败，尝试主入口', e);
+            for (let ret = 0; ret < 3; ret++) {
+                const appDoc = await getDocument(APP_ENTRY_LINK);
+                const iframe = appDoc.querySelector('iframe[src]');
+                if (iframe) {
+                    const addr = iframe.getAttribute('src');
+                    if (addr) {
+                        if (addr.includes('baidu.com')) {
+                            continue;
+                        }
+                        const aurl = new URL(addr, APP_ENTRY_LINK);
+                        try {
+                            await fetch2(aurl, { timeout: 5000 });
+                            this.rawHost = aurl.hostname;
+                            this.baseUrl = aurl.href;
+                            logInfo(`通过 APP 入口解析到域名: ${this.baseUrl} `);
+                            await this.postInit()
+                            return;
+                        } catch (e) {
+                            logWarn('APP 入口请求失败，尝试主入口', e);
+                        }
                     }
                 }
+                break;
             }
 
             // 尝试主入口（需要处理重定向）
@@ -223,6 +231,7 @@ export default class C17VideoSource extends BaseVideoSource {
             url: new URL(`/videoplay/0.html?v=${vid.id}`, this.baseUrl).href,
             id: vid.id?.toString(),
             views: vid.eye?.toString(),
+            duration: vid.time,
             title: vid.name,
             thumbnail: new URL(vid.enc_img, this.baseUrl).href,
             source: this.sourceId
@@ -236,7 +245,8 @@ export default class C17VideoSource extends BaseVideoSource {
         }
         
         const res5 = (await this.getAPI<IHome>('/v1/relist?c=100')).data;
-        const vid = res5.recommend_videos.videos.concat(res5.rank_videos.videos);
+        const vid = res5.recommend_videos.videos.concat(res5.rank_videos.videos)
+            .filter(v => v.is_yp === undefined);
 
         return {
             videos: vid.map(e => this.convIVideo(e)),
