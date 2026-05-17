@@ -41,9 +41,15 @@
  * 优先使用WebSocket RPC，不可用则回退到HTTP
  */
 class APIManager {
-    constructor(baseURL = '') {
+    constructor(baseURL) {
         /** @type {string} */
-        this.baseURL = baseURL;
+        // 自动检测基础路径（支持子目录部署）
+        if (baseURL === undefined) {
+            // 获取当前页面所在目录作为基础路径
+            this.baseURL = window.location.pathname.replace(/\/[^\/]*$/, '');
+        } else {
+            this.baseURL = baseURL;
+        }
         /** @type {number} */
         this.requestTimeout = 30000;
         /** @type {boolean} */

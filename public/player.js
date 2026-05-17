@@ -600,17 +600,24 @@ class VideoPlayerManager {
             // 使用代理
             // 优先使用quality.referrer，如果没有则使用当前视频URL
             const referer = quality.referrer || this.currentVideo.url;
-            let url = new URL(location);
+            
+            // 获取基础路径（支持子目录部署）
+            const basePath = window.location.pathname.replace(/\/[^\/]*$/, '');
+            
+            // 构建代理 URL
+            let proxyPath;
             if (quality.format === 'h5') {
                 // H5: 使用预配后缀名
                 let extname = new URL(quality.url).pathname.split('.').pop() || 'mp4';
                 if (extname.includes('/') || extname.length >= 5)
                     extname = 'mp4';
-                url.pathname = `api/proxy/video.${extname}`;
+                proxyPath = `${basePath}/api/proxy/video.${extname}`;
             } else {
                 // M3U8使用代理
-                url.pathname = `api/proxy/video.m3u8`;
+                proxyPath = `${basePath}/api/proxy/video.m3u8`;
             }
+            
+            const url = new URL(proxyPath, window.location.origin);
             url.searchParams.set('url', quality.url);
             url.searchParams.set('source', this.currentVideo.source);
             url.searchParams.set('referer', referer);

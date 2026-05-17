@@ -226,7 +226,9 @@ class VideoManager {
      */
     async initWebSocket() {
         try {
-            const wsUrl = `ws://${window.location.host}/ws`;
+            // 使用相对路径构建 WebSocket URL，支持子目录部署
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${wsProtocol}//${window.location.host}${window.location.pathname.replace(/\/[^\/]*$/, '')}/ws`;
 
             // 设置断开连接回调
             this.wsClient.onDisconnect = () => {
@@ -298,20 +300,24 @@ class VideoManager {
      * @param {Object} data - 验证码请求数据
      */
     handleCaptchaRequired(data) {
-        // 后端提供完整的验证码页面 URL，前端直接使用
-        const { captchaPageUrl } = data;
+        // 使用 requestId 构建验证码页面 URL（支持子目录部署）
+        const { requestId, prompt } = data;
 
-        if (!captchaPageUrl) {
-            console.error('验证码请求缺少 captchaPageUrl');
+        if (!requestId) {
+            console.error('验证码请求缺少 requestId');
             return;
         }
+
+        // 自己构建 captcha 页面 URL，确保路径正确
+        const basePath = window.location.pathname.replace(/\/[^\/]*$/, '');
+        const captchaUrl = `${basePath}/captcha.html?requestId=${encodeURIComponent(requestId)}${prompt ? `&prompt=${encodeURIComponent(prompt)}` : ''}`;
 
         // 使用 iframe 显示验证码
         const overlay = DOMHelper.$('#captchaOverlay');
         const iframe = DOMHelper.$('#captchaIframe');
 
         if (overlay && iframe) {
-            iframe.src = captchaPageUrl;
+            iframe.src = captchaUrl;
             DOMHelper.show(overlay);
             overlay.onclick = (e) => {
                 if (e.target === overlay) {
@@ -2030,7 +2036,9 @@ class VideoManager {
             return;
         }
         
-        const proxyUrl = window.location.origin + this.api.getProxyUrl(selectedQuality.url, this.playerManager.currentVideo.source);
+        // 获取基础路径（支持子目录部署）
+        const basePath = window.location.pathname.replace(/\/[^\/]*$/, '');
+        const proxyUrl = window.location.origin + (basePath ? basePath + '/' : '') + this.api.getProxyUrl(selectedQuality.url, this.playerManager.currentVideo.source);
         
         const success = await Utils.copyToClipboard(proxyUrl);
         if (success) {
