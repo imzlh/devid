@@ -139,11 +139,11 @@ export default class SMWeiaonaVideoSource extends BaseVideoSource {
         // Step 1: 123kpdz.com -> 获取跳转URL
         let step1Match;
         const tried: number[] = [];
-        while(true) try{
+        for (let j = 0; j < 10; j ++) try{
             let i;
             do
                 i = Math.ceil(Math.random() * 200);
-            while (tried.length < 100 && tried.includes(i));
+            while (tried.includes(i));
             tried.push(i);
 
             const url = `https://${i}kpdz.com`;
