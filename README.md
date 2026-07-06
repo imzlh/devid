@@ -2,8 +2,7 @@
 
 一个基于Deno的视频下载器，支持多源切换、视频搜索、M3U8解析、系列视频、短视频和下载功能。
 
-![搜索](docs/image-1.png)
-![选集](docs/image.png)
+![搜索](docs/image-1.png) ![选集](docs/image.png)
 
 > [!IMPORTANT]
 > 由于这个视频管理器最初是为了R18内容编写的，因此我们不会对项目进行宣传<br>
@@ -22,21 +21,22 @@
 - 在线视频播放（支持多种清晰度切换）
 
 ## 支持源
- - agefans动漫（推荐）
- - akianime动漫（还有很多与这个源高度相似的，可以以此扩展）
- - <del>aowu动漫</del> 已经删除，地址改来改去，没价值
- - 1anime动漫（推荐）
- - HAnime1黄漫
- - AVBebe 二次元动画（推荐）
- - SMWeiaona（推荐）
- - 海贼王（推荐）
- - 17c
- - GG51
+
+- agefans动漫（推荐）
+- akianime动漫（还有很多与这个源高度相似的，可以以此扩展）
+- <del>aowu动漫</del> 已经删除，地址改来改去，没价值
+- 1anime动漫（推荐）
+- HAnime1黄漫
+- AVBebe 二次元动画（推荐）
+- SMWeiaona（推荐）
+- 海贼王（推荐）
+- 17c
+- GG51
 
 ## 技术栈
 
 - 后端：Deno + Hono + WebSocket
-- 前端：原生HTML/CSS/JavaScript + ArtPlayer
+- 前端：Vue 3 + TypeScript + Vite + ArtPlayer
 - 下载：FFmpeg（需要系统安装）
 
 ## 安装和运行
@@ -44,7 +44,8 @@
 ### 前置要求
 
 1. 安装 [Deno](https://deno.land/)
-2. 安装 [FFmpeg](https://ffmpeg.org/)（用于视频下载）
+2. 安装 [pnpm](https://pnpm.io/)（用于构建前端）
+3. 安装 [FFmpeg](https://ffmpeg.org/)（用于视频下载）
 
 ### 运行步骤
 
@@ -52,11 +53,17 @@
 2. 在项目目录中运行：
 
 ```bash
+# 构建前端，Hono 会直接服务 web/dist
+deno task build
+
 # 开发模式（自动重启）
 deno task dev
 
 # 生产模式
 deno task start
+
+# 前端单独开发（Vite 会代理 /api 和 /ws 到 localhost:9876）
+deno task web:dev
 
 # 或者直接运行
 deno run -A main.ts
@@ -86,15 +93,15 @@ vdown/
 │   ├── websocket/         # WebSocket RPC
 │   │   ├── rpc.ts         # RPC服务器
 │   │   └── push.ts        # 推送服务
-│   └── server.ts          # 服务器主文件
-└── public/                # 前端静态文件
-    ├── index.html         # 主页面
-    ├── style.css          # 样式文件
-    ├── app.js             # 前端JavaScript
-    ├── api.js             # API客户端
-    ├── player.js          # 播放器组件
-    ├── utils.js           # 前端工具函数
-    └── websocket.js       # WebSocket RPC客户端
+│   ├── server/            # Hono 路由模块
+│   │   ├── app.ts         # 应用组装和 web/dist 静态服务
+│   │   ├── api-routes.ts  # HTTP API
+│   │   ├── proxy-routes.ts # M3U8/图片代理
+│   │   └── rpc-routes.ts  # WebSocket RPC 方法注册
+│   └── server.ts          # 服务器启动入口
+└── web/                   # Vue + Vite 前端
+    ├── src/               # Vue 组件、API 客户端和工具函数
+    └── dist/              # Vite 构建产物，由 Hono 直接服务
 ```
 
 ## M3U8处理
@@ -136,7 +143,7 @@ vdown/
 ### WebSocket 连接
 
 ```javascript
-// 使用简单的RPC协议。可以参照 public/websocket.js
+// 使用简单的RPC协议。可以参照 web/src/api/ws.ts
 new WebSocket("ws://localhost:9876/ws");
 ```
 
@@ -148,7 +155,7 @@ const result = await wsClient.call("videos.search", ["query", 1]);
 
 // 监听推送
 wsClient.onPush("downloads.update", (data) => {
-    console.log("下载更新:", data);
+  console.log("下载更新:", data);
 });
 ```
 
@@ -164,13 +171,18 @@ wsClient.onPush("downloads.update", (data) => {
 ### 示例视频源实现
 
 ```typescript
-import { BaseVideoSource } from './base.ts';
-import { VideoItem, SearchResult, IM3U8Result, ISeriesResult } from '../types/index.ts';
+import { BaseVideoSource } from "./base.ts";
+import {
+  IM3U8Result,
+  ISeriesResult,
+  SearchResult,
+  VideoItem,
+} from "../types/index.ts";
 
 export class MyVideoSource extends BaseVideoSource {
   constructor() {
     // 可选，是否支持系列，对于 短视频/系列视频需要设置为true
-    super('my-source', '我的视频源', 'https://my-video-site.com', false);
+    super("my-source", "我的视频源", "https://my-video-site.com", false);
   }
 
   async getHomeVideos(page?: number): Promise<ISearchResult> {

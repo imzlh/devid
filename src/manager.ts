@@ -1,5 +1,5 @@
 import { BaseVideoSource } from './sources/index.ts';
-import { ISource, ISourceHealth, ISeriesResult, IEpisode, IVideoList } from './types/index.ts';
+import { ISource, ISourceHealth, ISeriesResult, IEpisode, IVideoList, IVideoURL } from './types/index.ts';
 import { logError, logInfo, logDebug, logWarn } from "./utils/logger.ts";
 import { getConfig } from "./config/index.ts";
 import { SOURCES } from "./sources.ts";
@@ -303,8 +303,29 @@ export class VideoSourceManager {
         return true;
     }
 
+    private resolveSourceWrapper(source?: string | null): SourceWrapper | null {
+        if (!source) {
+            return this.activeSourceId ? this.sources.get(this.activeSourceId) ?? null : null;
+        }
+
+        const direct = this.sources.get(source);
+        if (direct) return direct;
+
+        const normalized = source.toLowerCase();
+        for (const wrapper of this.sources.values()) {
+            if (wrapper.name === source || wrapper.name.toLowerCase() === normalized) {
+                return wrapper;
+            }
+            if (wrapper.id.toLowerCase() === normalized) {
+                return wrapper;
+            }
+        }
+
+        return null;
+    }
+
     getSource(sourceId: string): BaseVideoSource | null {
-        return this.sources.get(sourceId)?.source || null;
+        return this.resolveSourceWrapper(sourceId)?.source || null;
     }
 
     getActiveSourceId(): string | null {
@@ -326,12 +347,12 @@ export class VideoSourceManager {
      * @param seriesId - 系列ID
      * @param url - 可选的系列页面URL，如果提供则优先使用
      */
-    async getSeries(seriesId: string, url?: string): Promise<ISeriesResult | null> {
-        const active = this.getActiveSource();
-        if (!active) return null;
+    async getSeries(seriesId: string, url?: string, source?: string): Promise<ISeriesResult | null> {
+        const target = this.resolveSourceWrapper(source);
+        if (!target?.initialized) return null;
 
         try {
-            const list = await active.getSeries(seriesId, url);
+            const list = await target.source.getSeries(seriesId, url);
             return list ?? null;
         } catch (error) {
             logError(`获取系列 ${seriesId} 失败:`, error);
@@ -342,12 +363,12 @@ export class VideoSourceManager {
     /**
      * 获取无限系列视频列表
      */
-    async getSeriesVideos(seriesId: string): Promise<{ episodes: IEpisode[] } | null> {
-        const active = this.getActiveSource();
-        if (!active) return null;
+    async getSeriesVideos(seriesId: string, source?: string): Promise<{ episodes: IEpisode[] } | null> {
+        const target = this.resolveSourceWrapper(source);
+        if (!target?.initialized) return null;
 
         try {
-            const result = await active.getSeries(seriesId);
+            const result = await target.source.getSeries(seriesId);
             if (result && result.episodes) {
                 return { episodes: result.episodes };
             }
@@ -356,6 +377,14 @@ export class VideoSourceManager {
             logError(`获取无限系列视频 ${seriesId} 失败:`, error);
             return null;
         }
+    }
+
+    async parseVideoUrl(url: string, source?: string): Promise<IVideoURL[]> {
+        const target = this.resolveSourceWrapper(source);
+        if (!target?.initialized) {
+            throw new Error(source ? `视频源不可用: ${source}` : "没有活动的视频源");
+        }
+        return await target.source.parseVideoUrl(url);
     }
 
     // ==================== 带缓存的API方法 ====================

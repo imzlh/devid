@@ -3,7 +3,10 @@
   "license": "MIT",
   "tasks": {
     "dev": "deno run --watch -A main.ts",
-    "start": "deno run -A main.ts"
+    "start": "deno run -A main.ts",
+    "web:dev": "cd web && pnpm dev",
+    "web:build": "cd web && pnpm build",
+    "build": "cd web && pnpm build"
   },
   "imports": {
     "@b-fuze/deno-dom": "jsr:@b-fuze/deno-dom@^0.1.56",
