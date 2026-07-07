@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "designSystem": {
+    "slug": "playstation",
+    "path": "design-systems/playstation"
+  },
+  "skill": {
+    "slug": "dashboard",
+    "path": "design-templates/dashboard",
+    "kind": "design-template",
+    "mode": "prototype"
+  },
+  "boundAt": "2026-07-06T03:06:10Z"
+}

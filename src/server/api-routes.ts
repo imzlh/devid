@@ -1,15 +1,32 @@
 import type { Hono } from "hono";
 import type { ServerContext } from "./context.ts";
 import { M3U8Service } from "../utils/m3u8.ts";
-import { fetch2 } from "../utils/fetch.ts";
+import { fetch2, imagePayloadError } from "../utils/fetch.ts";
 import { logDebug, logError, logInfo, logWarn } from "../utils/logger.ts";
 import {
+  normalizeDownloadFormatInput,
+  normalizeUrlProxyInput,
+  optionalTrimmedString,
   validatePagination,
   validateRequiredFields,
   validateRequiredString,
   validateUrl,
 } from "../utils/validation.ts";
 import { pushSourceChange } from "../websocket/push.ts";
+import { buildActiveSourceResponse } from "./source-response.ts";
+
+async function readJsonObject(
+  c: { req: { json(): Promise<unknown> } },
+): Promise<Record<string, unknown> | null> {
+  try {
+    const body = await c.req.json();
+    return body && typeof body === "object" && !Array.isArray(body)
+      ? body as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
 
 export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
   const { videoSourceManager, downloadManager, rpcServer } = ctx;
@@ -34,12 +51,14 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
       if (!validateRequiredString(sourceId, "sourceId")) {
         return c.json({ error: "缺少或无效的视频源ID" }, 400);
       }
+      const normalizedSourceId = optionalTrimmedString(sourceId) as string;
 
-      logInfo(`重新初始化视频源: ${sourceId}`);
-      const success = await videoSourceManager.initSource(sourceId);
+      logInfo(`重新初始化视频源: ${normalizedSourceId}`);
+      const success = await videoSourceManager.initSource(normalizedSourceId);
       return c.json({
         success,
-        health: videoSourceManager.getHealthStatus()[sourceId],
+        health: videoSourceManager.getSourceHealth(normalizedSourceId),
+        activeSourceId: videoSourceManager.getActiveSourceId(),
       });
     } catch (error) {
       logError("重新初始化视频源失败:", error);
@@ -49,7 +68,8 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
 
   app.post("/api/sources/active", async (c) => {
     try {
-      const body = await c.req.json();
+      const body = await readJsonObject(c);
+      if (!body) return c.json({ error: "无效的请求体" }, 400);
       const { id: sourceId } = body;
 
       if (!validateRequiredString(sourceId, "source")) {
@@ -57,18 +77,22 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
         return c.json({ error: "缺少或无效的source参数" }, 400);
       }
 
-      logDebug(`设置活动视频源: ${sourceId}`);
-      const success = videoSourceManager.setActiveSource(sourceId);
+      const activeSourceId = optionalTrimmedString(sourceId) as string;
+      logDebug(`设置活动视频源: ${activeSourceId}`);
+      const success = videoSourceManager.setActiveSource(activeSourceId);
       if (success) {
-        logInfo(`成功设置活动视频源: ${sourceId}`);
+        logInfo(`成功设置活动视频源: ${activeSourceId}`);
         const newSource = videoSourceManager.getActiveSource();
         if (newSource) {
           pushSourceChange(newSource.getId(), newSource.getName());
         }
       } else {
-        logWarn(`设置活动视频源失败: ${sourceId}`);
+        logWarn(`设置活动视频源失败: ${activeSourceId}`);
       }
-      return c.json({ success });
+      return c.json({
+        success,
+        ...buildActiveSourceResponse(videoSourceManager),
+      });
     } catch (error) {
       logError("设置活动视频源请求处理失败:", error);
       return c.json({ error: "请求处理失败" }, 500);
@@ -77,13 +101,7 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
 
   app.get("/api/sources/active", (c) => {
     logDebug("获取当前活动视频源");
-    const activeSource = videoSourceManager.getActiveSource();
-    const sourceId = videoSourceManager.getActiveSourceId();
-    return c.json({
-      id: sourceId,
-      name: activeSource?.getName() || null,
-      imageAspectRatio: activeSource?.getImageAspectRatio() || "16/9",
-    });
+    return c.json(buildActiveSourceResponse(videoSourceManager));
   });
 
   app.get("/api/home-videos", async (c) => {
@@ -94,7 +112,7 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
         return c.json({ error: "无效的分页参数" }, 400);
       }
 
-      const page = parseInt(pageParam);
+      const page = Number(pageParam);
       logDebug(`获取主页视频, page: ${page}`);
       const result = await videoSourceManager.getHomeVideos(page);
       logInfo(
@@ -122,9 +140,10 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
         return c.json({ error: "无效的分页参数" }, 400);
       }
 
-      const page = parseInt(pageParam);
-      logDebug(`搜索视频: ${query}, page: ${page}`);
-      const results = await videoSourceManager.searchVideos(query, page);
+      const page = Number(pageParam);
+      const searchQuery = query.trim();
+      logDebug(`搜索视频: ${searchQuery}, page: ${page}`);
+      const results = await videoSourceManager.searchVideos(searchQuery, page);
       logInfo(`搜索到 ${results.videos.length} 个视频`);
       return c.json(results);
     } catch (error) {
@@ -137,17 +156,23 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
     try {
       const seriesId = c.req.param("id");
       const url = c.req.query("url");
-      const source = c.req.query("source");
+      const source = optionalTrimmedString(c.req.query("source"));
 
-      if (!seriesId && !url) {
+      if (
+        !validateRequiredString(seriesId, "seriesId") && !validateUrl(url || "")
+      ) {
         return c.json({ error: "缺少系列ID或URL" }, 400);
       }
+      if (url && !validateUrl(url)) {
+        return c.json({ error: "无效的系列URL" }, 400);
+      }
 
-      logDebug(`获取系列详情: ${seriesId}`);
+      const normalizedSeriesId = optionalTrimmedString(seriesId) || seriesId;
+      logDebug(`获取系列详情: ${normalizedSeriesId}`);
       const detail = await videoSourceManager.getSeries(
-        seriesId,
-        url || undefined,
-        source || undefined,
+        normalizedSeriesId,
+        optionalTrimmedString(url),
+        source,
       );
       if (!detail) {
         return c.json({ error: "系列不存在" }, 404);
@@ -163,15 +188,16 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
   app.get("/api/series/:id/videos", async (c) => {
     try {
       const seriesId = c.req.param("id");
-      const source = c.req.query("source");
-      if (!seriesId) {
+      const source = optionalTrimmedString(c.req.query("source"));
+      if (!validateRequiredString(seriesId, "seriesId")) {
         return c.json({ error: "缺少系列ID" }, 400);
       }
+      const normalizedSeriesId = optionalTrimmedString(seriesId) as string;
 
-      logDebug(`获取无限系列视频: ${seriesId}`);
+      logDebug(`获取无限系列视频: ${normalizedSeriesId}`);
       const result = await videoSourceManager.getSeriesVideos(
-        seriesId,
-        source || undefined,
+        normalizedSeriesId,
+        source,
       );
       if (!result) {
         return c.json({ error: "系列不存在" }, 404);
@@ -186,19 +212,24 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
 
   app.post("/api/parse-video", async (c) => {
     try {
-      const body = await c.req.json();
+      const body = await readJsonObject(c);
+      if (!body) return c.json({ error: "无效的请求体" }, 400);
       const { url, source } = body;
 
       if (!validateUrl(url)) {
         logWarn("解析视频链接失败: 缺少或无效的URL参数");
         return c.json({ error: "缺少或无效的URL参数" }, 400);
       }
+      const targetUrl = (url as string).trim();
 
-      logDebug(`解析视频链接: ${url}`);
+      logDebug(`解析视频链接: ${targetUrl}`);
 
-      const m3u8Results = await videoSourceManager.parseVideoUrl(url, source);
-      logInfo(`解析视频链接成功，获取到 ${m3u8Results.length} 个结果`);
-      return c.json({ results: m3u8Results });
+      const videoUrls = await videoSourceManager.parseVideoUrl(
+        targetUrl,
+        optionalTrimmedString(source),
+      );
+      logInfo(`解析视频链接成功，获取到 ${videoUrls.length} 个结果`);
+      return c.json({ results: videoUrls });
     } catch (error) {
       logError("解析视频链接失败:", error);
       return c.json({ error: "解析视频链接失败" }, 500);
@@ -213,9 +244,10 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
         logWarn("解析M3U8失败: 缺少或无效的URL参数");
         return c.json({ error: "缺少或无效的URL参数" }, 400);
       }
+      const targetUrl = url.trim();
 
-      logDebug(`解析M3U8: ${url}`);
-      const results = await M3U8Service.fetchAndParseM3U8(url);
+      logDebug(`解析M3U8: ${targetUrl}`);
+      const results = await M3U8Service.fetchAndParseM3U8(targetUrl);
       logInfo(`成功解析M3U8，获取到 ${results.length} 个结果`);
       return c.json({ results });
     } catch (error) {
@@ -226,7 +258,8 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
 
   app.post("/api/captcha/submit", async (c) => {
     try {
-      const body = await c.req.json();
+      const body = await readJsonObject(c);
+      if (!body) return c.json({ error: "无效的请求体" }, 400);
       const { requestId, answer } = body;
 
       if (!validateRequiredString(requestId, "requestId")) {
@@ -239,13 +272,15 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
         return c.json({ error: "缺少或无效的answer" }, 400);
       }
 
-      logDebug(`提交验证码答案: requestId=${requestId}, answer=${answer}`);
+      const captchaRequestId = optionalTrimmedString(requestId) as string;
+      const captchaAnswer = optionalTrimmedString(answer) as string;
+      logDebug(`提交验证码答案: requestId=${captchaRequestId}`);
       const { resolveCaptcha } = await import("../utils/captcha.ts");
-      const success = resolveCaptcha(requestId, answer);
+      const success = resolveCaptcha(captchaRequestId, captchaAnswer);
       if (success) {
-        logInfo(`验证码答案已提交: ${requestId}`);
+        logInfo(`验证码答案已提交: ${captchaRequestId}`);
       } else {
-        logWarn(`验证码答案提交失败: ${requestId}`);
+        logWarn(`验证码答案提交失败: ${captchaRequestId}`);
       }
 
       return c.json({ success });
@@ -257,7 +292,8 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
 
   app.post("/api/captcha/cancel", async (c) => {
     try {
-      const body = await c.req.json();
+      const body = await readJsonObject(c);
+      if (!body) return c.json({ error: "无效的请求体" }, 400);
       const { requestId, reason } = body;
 
       if (!validateRequiredString(requestId, "requestId")) {
@@ -265,17 +301,20 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
         return c.json({ error: "缺少或无效的requestId" }, 400);
       }
 
+      const captchaRequestId = optionalTrimmedString(requestId) as string;
+      const cancelReason = optionalTrimmedString(reason) || "用户取消";
       logDebug(
-        `取消验证码请求: requestId=${requestId}, reason=${
-          reason || "用户取消"
-        }`,
+        `取消验证码请求: requestId=${captchaRequestId}, reason=${cancelReason}`,
       );
       const { cancelCaptcha } = await import("../utils/captcha.ts");
-      const success = cancelCaptcha(requestId, reason || "用户取消");
+      const success = cancelCaptcha(
+        captchaRequestId,
+        cancelReason,
+      );
       if (success) {
-        logInfo(`验证码请求已取消: ${requestId}`);
+        logInfo(`验证码请求已取消: ${captchaRequestId}`);
       } else {
-        logWarn(`验证码请求取消失败: ${requestId}`);
+        logWarn(`验证码请求取消失败: ${captchaRequestId}`);
       }
 
       return c.json({ success });
@@ -288,19 +327,23 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
   app.get("/api/captcha/image", async (c) => {
     try {
       const requestId = c.req.query("requestId");
-      if (!requestId) {
+      if (
+        typeof requestId !== "string" ||
+        !validateRequiredString(requestId, "requestId")
+      ) {
         logWarn("获取验证码图片失败: 缺少 requestId");
         return c.json({ error: "缺少 requestId 参数" }, 400);
       }
+      const captchaRequestId = optionalTrimmedString(requestId) as string;
 
       const { getCaptchaImageUrl } = await import("../utils/captcha.ts");
-      const imageUrl = getCaptchaImageUrl(requestId);
+      const imageUrl = getCaptchaImageUrl(captchaRequestId);
       if (!imageUrl) {
-        logWarn(`获取验证码图片失败: 无效的 requestId: ${requestId}`);
+        logWarn(`获取验证码图片失败: 无效的 requestId: ${captchaRequestId}`);
         return c.json({ error: "无效的验证码请求" }, 404);
       }
 
-      logDebug(`代理验证码图片: ${requestId} -> ${imageUrl}`);
+      logDebug(`代理验证码图片: ${captchaRequestId} -> ${imageUrl}`);
       const response = await fetch2(imageUrl, {
         headers: {
           "Accept": "image/*,*/*",
@@ -315,8 +358,15 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
         return c.json({ error: "获取验证码图片失败" }, 502);
       }
 
-      const imageBuffer = await response.arrayBuffer();
+      const imageBuffer = new Uint8Array(await response.arrayBuffer());
       const contentType = response.headers.get("content-type") || "image/png";
+      const imageError = imagePayloadError(imageBuffer, contentType);
+      if (imageError) {
+        logWarn(
+          `验证码图片响应无效: requestId=${captchaRequestId}, content-type=${contentType}, ${imageError}`,
+        );
+        return c.json({ error: imageError }, 502);
+      }
       c.header("Content-Type", contentType);
       c.header("Cache-Control", "no-cache, no-store, must-revalidate");
       return c.body(imageBuffer);
@@ -328,8 +378,9 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
 
   app.post("/api/downloads", async (c) => {
     try {
-      const body = await c.req.json();
-      const { url, title, outputPath, quality, referer } = body;
+      const body = await readJsonObject(c);
+      if (!body) return c.json({ error: "无效的请求体" }, 400);
+      const { url, title, outputPath, quality, referer, format, proxy } = body;
       const missingFields = validateRequiredFields(body, ["url", "title"]);
       if (missingFields.length > 0) {
         logWarn(`创建下载任务失败: 缺少必需参数: ${missingFields.join(", ")}`);
@@ -346,30 +397,42 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
 
       logDebug(`创建下载任务: ${title}, url: ${url}, quality: ${quality}`);
       const taskId = downloadManager.createDownloadTask(
-        url,
-        title,
-        outputPath,
-        referer,
+        (url as string).trim(),
+        title as string,
+        optionalTrimmedString(outputPath),
+        optionalTrimmedString(referer),
+        {
+          format: normalizeDownloadFormatInput(format),
+          proxy: normalizeUrlProxyInput(proxy),
+        },
       );
       const task = downloadManager.getDownloadTask(taskId);
+      await downloadManager.saveToKV();
       logInfo(`成功创建下载任务: ${taskId}`);
       return c.json({ task });
     } catch (error) {
       logError("创建下载任务失败:", error);
+      if (
+        error instanceof Error &&
+        error.message.startsWith("下载URL不是直连媒体地址")
+      ) {
+        return c.json({ error: error.message }, 400);
+      }
       return c.json({ error: "创建下载任务失败" }, 500);
     }
   });
 
-  app.post("/api/downloads/:id/start", (c) => {
+  app.post("/api/downloads/:id/start", async (c) => {
     try {
       const taskId = c.req.param("id");
       if (!validateRequiredString(taskId, "taskId")) {
         logWarn("开始下载失败: 缺少或无效的任务ID");
         return c.json({ error: "缺少或无效的任务ID" }, 400);
       }
+      const normalizedTaskId = optionalTrimmedString(taskId) as string;
 
-      logDebug(`开始下载任务: ${taskId}`);
-      const task = downloadManager.getDownloadTask(taskId);
+      logDebug(`开始下载任务: ${normalizedTaskId}`);
+      const task = downloadManager.getDownloadTask(normalizedTaskId);
       if (!task) {
         return c.json({ error: "下载任务不存在" }, 404);
       }
@@ -382,17 +445,32 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
         return c.json({ success: true, message: "任务已下载完成" });
       }
 
-      downloadManager.startDownload(taskId);
-      logInfo(`下载任务 ${taskId} 已加入队列`);
+      downloadManager.startDownload(normalizedTaskId);
+      await downloadManager.saveToKV();
+      logInfo(`下载任务 ${normalizedTaskId} 已加入队列`);
       return c.json({
         success: true,
         message: "任务已加入下载队列",
-        task: downloadManager.getDownloadTask(taskId),
+        task: downloadManager.getDownloadTask(normalizedTaskId),
       });
     } catch (error) {
       logError("开始下载失败:", error);
       return c.json({ error: "开始下载失败" }, 500);
     }
+  });
+
+  app.get("/api/downloads", (c) => {
+    logDebug("获取所有下载任务");
+    return c.json({ tasks: downloadManager.getAllDownloadTasks() });
+  });
+
+  app.get("/api/downloads/stats", (c) => {
+    return c.json({
+      stats: downloadManager.getStats(),
+      active: downloadManager.getActiveDownloads().length,
+      pending: downloadManager.getPendingDownloads().length,
+      queue: downloadManager.getAllDownloadTasks().length,
+    });
   });
 
   app.get("/api/downloads/:id", (c) => {
@@ -402,11 +480,12 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
         logWarn("获取下载任务状态失败: 缺少或无效的任务ID");
         return c.json({ error: "缺少或无效的任务ID" }, 400);
       }
+      const normalizedTaskId = optionalTrimmedString(taskId) as string;
 
-      logDebug(`获取下载任务状态: ${taskId}`);
-      const task = downloadManager.getDownloadTask(taskId);
+      logDebug(`获取下载任务状态: ${normalizedTaskId}`);
+      const task = downloadManager.getDownloadTask(normalizedTaskId);
       if (!task) {
-        logWarn(`下载任务不存在: ${taskId}`);
+        logWarn(`下载任务不存在: ${normalizedTaskId}`);
         return c.json({ error: "下载任务不存在" }, 404);
       }
 
@@ -417,11 +496,6 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
     }
   });
 
-  app.get("/api/downloads", (c) => {
-    logDebug("获取所有下载任务");
-    return c.json({ tasks: downloadManager.getAllDownloadTasks() });
-  });
-
   app.post("/api/downloads/:id/cancel", async (c) => {
     try {
       const taskId = c.req.param("id");
@@ -429,14 +503,20 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
         logWarn("取消下载失败: 缺少或无效的任务ID");
         return c.json({ error: "缺少或无效的任务ID" }, 400);
       }
+      const normalizedTaskId = optionalTrimmedString(taskId) as string;
 
-      logDebug(`取消下载任务: ${taskId}`);
-      const success = downloadManager.cancelDownload(taskId);
+      logDebug(`取消下载任务: ${normalizedTaskId}`);
+      const task = downloadManager.getDownloadTask(normalizedTaskId);
+      if (!task) {
+        return c.json({ error: "下载任务不存在" }, 404);
+      }
+
+      const success = downloadManager.cancelDownload(normalizedTaskId);
       if (success) {
-        logInfo(`下载任务 ${taskId} 已取消`);
+        logInfo(`下载任务 ${normalizedTaskId} 已取消`);
         await downloadManager.saveToKV();
       } else {
-        logWarn(`取消下载任务 ${taskId} 失败`);
+        logWarn(`取消下载任务 ${normalizedTaskId} 失败`);
       }
       return c.json({ success });
     } catch (error) {
@@ -451,15 +531,22 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
       if (!validateRequiredString(taskId, "taskId")) {
         return c.json({ error: "缺少或无效的任务ID" }, 400);
       }
+      const normalizedTaskId = optionalTrimmedString(taskId) as string;
 
-      logDebug(`重试下载任务: ${taskId}`);
-      const task = downloadManager.getDownloadTask(taskId);
+      logDebug(`重试下载任务: ${normalizedTaskId}`);
+      const task = downloadManager.getDownloadTask(normalizedTaskId);
       if (!task) {
         return c.json({ error: "下载任务不存在" }, 404);
       }
 
-      const success = await downloadManager.retryDownload(taskId);
-      return c.json({ success, task: downloadManager.getDownloadTask(taskId) });
+      const success = await downloadManager.retryDownload(normalizedTaskId);
+      if (success) {
+        await downloadManager.saveToKV();
+      }
+      return c.json({
+        success,
+        task: downloadManager.getDownloadTask(normalizedTaskId),
+      });
     } catch (error) {
       logError("重试下载失败:", error);
       return c.json({ error: "重试下载失败" }, 500);
@@ -474,9 +561,18 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
       if (!validateRequiredString(taskId, "taskId")) {
         return c.json({ error: "缺少或无效的任务ID" }, 400);
       }
+      const normalizedTaskId = optionalTrimmedString(taskId) as string;
 
-      logDebug(`删除下载任务: ${taskId}, 删除文件: ${deleteFile}`);
-      const success = downloadManager.deleteDownload(taskId, deleteFile);
+      logDebug(`删除下载任务: ${normalizedTaskId}, 删除文件: ${deleteFile}`);
+      const task = downloadManager.getDownloadTask(normalizedTaskId);
+      if (!task) {
+        return c.json({ error: "下载任务不存在" }, 404);
+      }
+
+      const success = downloadManager.deleteDownload(
+        normalizedTaskId,
+        deleteFile,
+      );
       if (success) {
         await downloadManager.saveToKV();
       }
@@ -487,18 +583,9 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
     }
   });
 
-  app.get("/api/downloads/stats", (c) => {
-    return c.json({
-      stats: downloadManager.getStats(),
-      active: downloadManager.getActiveDownloads().length,
-      pending: downloadManager.getPendingDownloads().length,
-      queue: downloadManager.getAllDownloadTasks().length,
-    });
-  });
-
   app.post("/api/downloads/clear-completed", async (c) => {
     try {
-      const body = await c.req.json().catch(() => ({}));
+      const body = await readJsonObject(c) ?? {};
       const deleteFiles = body.deleteFiles === true;
 
       logDebug(`清除已完成下载任务, 删除文件: ${deleteFiles}`);
@@ -513,7 +600,7 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
       }
 
       return c.json({
-        success: result.count > 0,
+        success: true,
         clearedCount: result.count,
         deletedFiles: result.deletedFiles,
       });
@@ -550,7 +637,7 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
 
   app.get("/ws", (c) => {
     const upgrade = c.req.header("upgrade");
-    if (upgrade !== "websocket") {
+    if (upgrade?.toLowerCase() !== "websocket") {
       return c.text("Expected websocket", 400);
     }
 

@@ -2,6 +2,7 @@
  * 极简代理服务器实现
  * 直接拷贝到Deno Deploy即可使用
  */
+// deno-lint-ignore no-import-prefix no-unversioned-import -- Keep this file copy-pasteable for Deno Deploy.
 import { decodeBase64 } from "jsr:@std/encoding";
 
 const headers = new Headers({
@@ -36,9 +37,9 @@ async function handle(req: Request) {
 }
 
 const authPath = Deno.env.get('PROXY_PATH') ?? '/';
-const middlewares: Array<(req: Request, next: () => Promise<Response>) => Promise<Response>> = [
+const middlewares: Array<(req: Request, next: () => Promise<Response>) => Response | Promise<Response>> = [
     // auth middleware
-    async (req, next) => {
+    (req, next) => {
         if (new URL(req.url).pathname === authPath) {
             return next();
         } else {
@@ -47,7 +48,7 @@ const middlewares: Array<(req: Request, next: () => Promise<Response>) => Promis
     },
 
     // option middleware
-    async (req, next) => {
+    (req, next) => {
         if (req.method === 'OPTIONS') {
             return new Response(null, {
                 status: 204,
@@ -64,11 +65,11 @@ const middlewares: Array<(req: Request, next: () => Promise<Response>) => Promis
 
 Deno.serve(req => {
     // wrap all function
-    let next = () => handle(req);
+    let next: () => Promise<Response> = () => handle(req);
     for (let i = middlewares.length - 1; i >= 0; i--) {
         const mw = middlewares[i];
         const _next = next;
-        next = () => mw(req, _next);
+        next = () => Promise.resolve(mw(req, _next));
     }
 
     // execute all function

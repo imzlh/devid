@@ -2,17 +2,41 @@
  * 参数校验工具函数
  */
 
+import { type IDownloadTask, URLProxy } from "../types/index.ts";
+
 /**
  * 校验字符串参数是否存在且非空
  * @param value 要校验的值
  * @param fieldName 字段名称，用于错误消息
  * @returns 校验通过返回true，否则返回false
  */
-export function validateRequiredString(value: any, fieldName: string): boolean {
-    if (value === undefined || value === null || value === '') {
-        return false;
-    }
-    return typeof value === 'string';
+export function validateRequiredString(value: unknown, _fieldName: string): boolean {
+    return typeof value === 'string' && value.trim().length > 0;
+}
+
+export function optionalTrimmedString(value: unknown): string | undefined {
+    return typeof value === "string" && value.trim().length > 0
+        ? value.trim()
+        : undefined;
+}
+
+export function normalizeDownloadFormatInput(
+    value: unknown,
+): IDownloadTask["format"] {
+    const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+    return normalized === "m3u8" || normalized === "h5" ? normalized : undefined;
+}
+
+export function normalizeUrlProxyInput(value: unknown): IDownloadTask["proxy"] {
+    const normalized = typeof value === "number"
+        ? value
+        : typeof value === "string" && value.trim() !== ""
+        ? Number(value.trim())
+        : Number.NaN;
+    return normalized === URLProxy.NONE || normalized === URLProxy.LOCAL ||
+            normalized === URLProxy.REMOTE
+        ? normalized
+        : undefined;
 }
 
 /**
@@ -23,13 +47,13 @@ export function validateRequiredString(value: any, fieldName: string): boolean {
  * @param max 最大值（可选）
  * @returns 校验通过返回true，否则返回false
  */
-export function validateNumber(value: any, fieldName: string, min?: number, max?: number): boolean {
+export function validateNumber(value: unknown, _fieldName: string, min?: number, max?: number): boolean {
     if (value === undefined || value === null) {
         return false;
     }
     
     const num = Number(value);
-    if (isNaN(num)) {
+    if (!Number.isFinite(num)) {
         return false;
     }
     
@@ -49,14 +73,14 @@ export function validateNumber(value: any, fieldName: string, min?: number, max?
  * @param url 要校验的URL
  * @returns 校验通过返回true，否则返回false
  */
-export function validateUrl(url: string): boolean {
+export function validateUrl(url: unknown): boolean {
     if (!validateRequiredString(url, 'url')) {
         return false;
     }
-    
+
     try {
-        new URL(url);
-        return true;
+        const parsed = new URL((url as string).trim());
+        return parsed.protocol === "http:" || parsed.protocol === "https:";
     } catch {
         return false;
     }
@@ -68,11 +92,12 @@ export function validateUrl(url: string): boolean {
  * @param requiredFields 必需字段名数组
  * @returns 缺失的字段名数组，如果没有缺失则返回空数组
  */
-export function validateRequiredFields(body: any, requiredFields: string[]): string[] {
+export function validateRequiredFields(body: unknown, requiredFields: string[]): string[] {
     const missingFields: string[] = [];
-    
+    const record = body && typeof body === "object" ? body as Record<string, unknown> : {};
+
     for (const field of requiredFields) {
-        if (body[field] === undefined || body[field] === null || body[field] === '') {
+        if (!validateRequiredString(record[field], field)) {
             missingFields.push(field);
         }
     }
@@ -86,15 +111,19 @@ export function validateRequiredFields(body: any, requiredFields: string[]): str
  * @param limit 每页数量（可选）
  * @returns 校验通过返回true，否则返回false
  */
-export function validatePagination(page: any, limit?: any): boolean {
+export function validatePagination(page: unknown, limit?: unknown): boolean {
     const pageValid = validateNumber(page, 'page', 1);
-    
+
     if (!pageValid) {
         return false;
     }
-    
+
+    if (!Number.isInteger(Number(page))) {
+        return false;
+    }
+
     if (limit !== undefined) {
-        return validateNumber(limit, 'limit', 1, 100);
+        return validateNumber(limit, 'limit', 1, 100) && Number.isInteger(Number(limit));
     }
     
     return true;

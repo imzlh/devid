@@ -98,15 +98,23 @@ export interface VideoUrl {
 
 export interface DownloadTask {
   id: string;
+  url: string;
+  referer?: string;
   title: string;
+  outputPath: string;
   fileName: string;
   filePath: string;
+  format?: "m3u8" | "h5";
+  proxy?: URLProxy;
   status: "pending" | "downloading" | "completed" | "error" | "cancelled";
   progress: number;
   createTime: string;
   startTime?: string;
   endTime?: string;
   error?: string;
+  totalSegments?: number;
+  retryCount?: number;
+  maxRetries?: number;
 }
 
 export interface RpcPush<T = unknown> {

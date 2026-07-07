@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Download, Play, X } from "@lucide/vue";
 import { getSeriesDetail, getSeriesVideos } from "../api/client";
 import type { Episode, SeriesDetail, VideoItem } from "../types/api";
@@ -20,6 +20,7 @@ const detail = ref<SeriesDetail | null>(null);
 const loading = ref(false);
 const error = ref("");
 const selectedIds = ref<Set<string>>(new Set());
+const panel = ref<HTMLElement | null>(null);
 let detailRequestId = 0;
 
 const episodes = computed(() => detail.value?.episodes ?? []);
@@ -32,6 +33,11 @@ const allEpisodesSelected = computed(() =>
 
 function episodeKey(episode: Episode): string {
   return `${episode.id}:${episode.url}`;
+}
+
+function episodeSelectionLabel(episode: Episode): string {
+  const title = episode.title || `第 ${episode.episodeNumber || "-"} 集`;
+  return `选择 ${title}`;
 }
 
 function detailFromInfinite(series: VideoItem, episodes: Episode[]): SeriesDetail {
@@ -47,38 +53,55 @@ function detailFromInfinite(series: VideoItem, episodes: Episode[]): SeriesDetai
   };
 }
 
+async function loadSeries(series: VideoItem | null) {
+  const requestId = ++detailRequestId;
+  detail.value = null;
+  selectedIds.value = new Set();
+  error.value = "";
+  if (!series) return;
+
+  loading.value = true;
+  try {
+    const nextDetail = series.contentType === "infinite"
+      ? detailFromInfinite(
+        series,
+        (await getSeriesVideos(series.id, series.source)).episodes,
+      )
+      : await getSeriesDetail(
+        series.id,
+        series.url,
+        series.source,
+      );
+    if (requestId !== detailRequestId) return;
+    detail.value = nextDetail;
+  } catch (err) {
+    if (requestId !== detailRequestId) return;
+    error.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    if (requestId === detailRequestId) loading.value = false;
+  }
+}
+
+function retryLoadSeries() {
+  if (props.series) void loadSeries(props.series);
+}
+
 watch(
   () => props.series,
-  async (series) => {
-    const requestId = ++detailRequestId;
-    detail.value = null;
-    selectedIds.value = new Set();
-    error.value = "";
-    if (!series) return;
-
-    loading.value = true;
-    try {
-      const nextDetail = series.contentType === "infinite"
-        ? detailFromInfinite(
-          series,
-          (await getSeriesVideos(series.id, series.source)).episodes,
-        )
-        : await getSeriesDetail(
-          series.id,
-          series.url,
-          series.source,
-        );
-      if (requestId !== detailRequestId) return;
-      detail.value = nextDetail;
-    } catch (err) {
-      if (requestId !== detailRequestId) return;
-      error.value = err instanceof Error ? err.message : String(err);
-    } finally {
-      if (requestId === detailRequestId) loading.value = false;
-    }
+  (series) => {
+    void loadSeries(series);
+    void nextTick(() => panel.value?.focus());
   },
   { immediate: true },
 );
+
+onMounted(() => {
+  void nextTick(() => panel.value?.focus());
+});
+
+onBeforeUnmount(() => {
+  detailRequestId++;
+});
 
 function toggleEpisode(episode: Episode, checked: boolean) {
   const next = new Set(selectedIds.value);
@@ -100,13 +123,31 @@ function downloadSelected() {
   if (!detail.value || selectedEpisodes.value.length === 0) return;
   emit("downloadMany", selectedEpisodes.value, detail.value);
 }
+
+function playEpisode(episode: Episode) {
+  if (!detail.value) return;
+  emit("play", episode, detail.value);
+}
+
+function downloadEpisode(episode: Episode) {
+  if (!detail.value) return;
+  emit("download", episode, detail.value);
+}
 </script>
 
 <template>
-  <aside v-if="series" class="series-panel">
+  <aside
+    v-if="series"
+    ref="panel"
+    class="series-panel"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="series-title"
+    tabindex="-1"
+  >
     <header class="player-header">
       <div>
-        <h2>{{ detail?.title ?? series.title }}</h2>
+        <h2 id="series-title">{{ detail?.title ?? series.title }}</h2>
         <span>{{ detail?.totalEpisodes ?? 0 }} 集 · {{ series.source }}</span>
       </div>
       <button type="button" class="icon-button" aria-label="关闭" @click="emit('close')">
@@ -118,7 +159,10 @@ function downloadSelected() {
       {{ detail.description }}
     </p>
 
-    <p v-if="error" class="error">{{ error }}</p>
+    <div v-if="error" class="error state-error">
+      <span role="alert">{{ error }}</span>
+      <button type="button" @click="retryLoadSeries">重试</button>
+    </div>
     <div v-if="loading" class="empty">加载选集...</div>
 
     <template v-else-if="episodes.length">
@@ -146,16 +190,17 @@ function downloadSelected() {
           <label class="episode-check">
             <input
               type="checkbox"
+              :aria-label="episodeSelectionLabel(episode)"
               :checked="selectedIds.has(episodeKey(episode))"
               @change="toggleEpisode(episode, ($event.target as HTMLInputElement).checked)"
             />
           </label>
-          <button type="button" @click="emit('play', episode, detail!)">
+          <button type="button" @click="playEpisode(episode)">
             <span>{{ episode.episodeNumber || "-" }}</span>
             <Play :size="14" :stroke-width="2.3" />
             <strong>{{ episode.title }}</strong>
           </button>
-          <button type="button" @click="emit('download', episode, detail!)">
+          <button type="button" @click="downloadEpisode(episode)">
             <Download :size="14" :stroke-width="2.3" />
             下载
           </button>

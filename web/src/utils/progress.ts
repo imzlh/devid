@@ -1,4 +1,5 @@
-import type { VideoItem } from "../types/api";
+import type { VideoItem } from "../types/api.ts";
+import { httpUrlOrEmpty } from "./media.ts";
 
 const STORAGE_KEY = "vdown:web:progress";
 
@@ -16,11 +17,72 @@ function keyOf(video: VideoItem | string): string {
   return `${video.source}:${video.id}`;
 }
 
+function finiteNumber(value: unknown, fallback = 0): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function isVideoItem(value: unknown): value is VideoItem {
+  if (!value || typeof value !== "object") return false;
+  const video = value as Partial<VideoItem>;
+  return typeof video.id === "string" && video.id.trim().length > 0 &&
+    typeof video.source === "string" && video.source.trim().length > 0 &&
+    typeof video.title === "string" && video.title.trim().length > 0 &&
+    typeof video.url === "string" && video.url.trim().length > 0;
+}
+
+function normalizeContentType(
+  value: unknown,
+): VideoItem["contentType"] | undefined {
+  return value === "video" || value === "series" || value === "infinite"
+    ? value
+    : undefined;
+}
+
+function normalizeVideoItem(value: unknown): VideoItem | undefined {
+  if (!isVideoItem(value)) return undefined;
+  const url = httpUrlOrEmpty(value.url);
+  if (!url) return undefined;
+  return {
+    id: value.id.trim(),
+    source: value.source.trim(),
+    title: value.title.trim(),
+    url,
+    thumbnail: httpUrlOrEmpty(value.thumbnail),
+    duration: typeof value.duration === "string" ? value.duration : undefined,
+    views: typeof value.views === "string" ? value.views : undefined,
+    uploadTime: typeof value.uploadTime === "string"
+      ? value.uploadTime
+      : undefined,
+    contentType: normalizeContentType(value.contentType),
+  };
+}
+
+function normalizeRecord(value: unknown): ProgressRecord | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Partial<ProgressRecord>;
+  const updatedAt = finiteNumber(record.updatedAt);
+  if (updatedAt <= 0) return null;
+  return {
+    time: finiteNumber(record.time),
+    duration: finiteNumber(record.duration),
+    updatedAt,
+    video: normalizeVideoItem(record.video),
+  };
+}
+
 function readStore(): ProgressStore {
   try {
-    return JSON.parse(
+    const raw = JSON.parse(
       localStorage.getItem(STORAGE_KEY) || "{}",
-    ) as ProgressStore;
+    ) as Record<string, unknown>;
+    if (!raw || typeof raw !== "object") return {};
+    return Object.fromEntries(
+      Object.entries(raw)
+        .map(([key, value]) => [key, normalizeRecord(value)] as const)
+        .filter((entry): entry is [string, ProgressRecord] =>
+          entry[1] !== null
+        ),
+    );
   } catch {
     return {};
   }
@@ -43,7 +105,7 @@ export function getProgress(video: VideoItem | string): number {
   const maxAgeMs = 30 * 24 * 60 * 60 * 1000;
   if (Date.now() - record.updatedAt > maxAgeMs) return 0;
   if (record.duration > 0 && record.time > record.duration - 20) return 0;
-  return Math.max(0, record.time);
+  return Math.max(0, finiteNumber(record.time));
 }
 
 export function saveProgress(
@@ -51,13 +113,20 @@ export function saveProgress(
   time: number,
   duration: number,
 ): void {
-  if (!video.id || time < 5) return;
+  const storedVideo = normalizeVideoItem(video);
+  if (
+    !storedVideo ||
+    !Number.isFinite(time) ||
+    !Number.isFinite(duration) ||
+    duration <= 0 ||
+    time < 5
+  ) return;
   const store = readStore();
-  store[keyOf(video)] = {
+  store[keyOf(storedVideo)] = {
     time,
     duration,
     updatedAt: Date.now(),
-    video,
+    video: storedVideo,
   };
   writeStore(store);
 }
@@ -81,7 +150,7 @@ export function getRecentVideos(): VideoItem[] {
       return true;
     })
     .slice(0, 30)
-    .map((record) => record.video!);
+    .flatMap((record) => record.video ? [record.video] : []);
 }
 
 export function clearRecentVideos(): void {

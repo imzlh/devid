@@ -2,13 +2,19 @@
 import Artplayer from "artplayer";
 import Hls from "hls.js";
 import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
+import { inferMediaFormat } from "../utils/media";
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   src: string;
   title: string;
+  format?: "m3u8" | "h5";
   poster?: string;
   startTime?: number;
-}>();
+}>(), {
+  format: undefined,
+  poster: "",
+  startTime: 0,
+});
 
 const emit = defineEmits<{
   error: [message: string];
@@ -18,47 +24,75 @@ const emit = defineEmits<{
 const container = ref<HTMLDivElement | null>(null);
 const player = shallowRef<Artplayer | null>(null);
 let hls: Hls | null = null;
+let initialSeekTime = 0;
+let mountToken = 0;
+
+function shouldUseHls(): boolean {
+  return inferMediaFormat(props.src, props.format) === "m3u8";
+}
 
 function destroyPlayer() {
-  hls?.destroy();
+  mountToken++;
+  try {
+    hls?.destroy();
+  } catch {
+    // Third-party teardown should not break the Vue component lifecycle.
+  }
   hls = null;
-  player.value?.destroy(false);
+  try {
+    player.value?.destroy();
+  } catch {
+    // Keep stale player teardown failures from crashing the next mount.
+  }
   player.value = null;
 }
 
-function attachHls(video: HTMLVideoElement, url: string) {
+function attachHls(video: HTMLVideoElement, url: string, token: number) {
+  if (token !== mountToken) return;
   if (video.canPlayType("application/vnd.apple.mpegurl")) {
     video.src = url;
     return;
   }
 
   if (!Hls.isSupported()) {
-    emit("error", "当前浏览器不支持 HLS 播放");
+    if (token === mountToken) emit("error", "当前浏览器不支持 HLS 播放");
     video.src = url;
     return;
   }
 
-  hls = new Hls({
-    enableWorker: true,
-    lowLatencyMode: false,
-  });
-  hls.on(Hls.Events.ERROR, (_event, data) => {
-    if (data.fatal) {
-      emit("error", data.details || "HLS 播放失败");
+  try {
+    hls = new Hls({
+      enableWorker: true,
+      lowLatencyMode: false,
+    });
+    hls.on(Hls.Events.ERROR, (_event, data) => {
+      if (token === mountToken && data.fatal) {
+        emit("error", data.details || "HLS 播放失败");
+      }
+    });
+    hls.loadSource(url);
+    hls.attachMedia(video);
+  } catch (error) {
+    hls?.destroy();
+    hls = null;
+    if (token === mountToken) {
+      emit("error", error instanceof Error ? error.message : "HLS 播放失败");
     }
-  });
-  hls.loadSource(url);
-  hls.attachMedia(video);
+  }
 }
 
 function mountPlayer() {
   destroyPlayer();
   if (!container.value || !props.src) return;
 
-  player.value = new Artplayer({
+  const token = ++mountToken;
+  initialSeekTime = props.startTime > 0 ? props.startTime : 0;
+  const useHls = shouldUseHls();
+  const poster = typeof props.poster === "string" ? props.poster : "";
+  const options: ConstructorParameters<typeof Artplayer>[0] = {
     container: container.value,
     url: props.src,
-    poster: props.poster,
+    poster,
     autoplay: true,
     pip: true,
     fullscreen: true,
@@ -67,27 +101,45 @@ function mountPlayer() {
     setting: true,
     hotkey: true,
     mutex: true,
-    customType: {
+  };
+  if (useHls) {
+    options.type = "m3u8";
+    options.customType = {
       m3u8(video, url) {
-        attachHls(video, url);
+        attachHls(video, url, token);
       },
-    },
-  });
+    };
+  }
 
-  player.value.on("ready", () => {
-    if (props.startTime && props.startTime > 0 && player.value) {
-      player.value.currentTime = props.startTime;
+  let art: Artplayer;
+  try {
+    art = new Artplayer(options);
+  } catch (error) {
+    if (token === mountToken) {
+      emit("error", error instanceof Error ? error.message : "播放器初始化失败");
+    }
+    return;
+  }
+  player.value = art;
+
+  art.on("ready", () => {
+    if (token === mountToken && initialSeekTime > 0) {
+      art.currentTime = initialSeekTime;
     }
   });
-  player.value.on("video:timeupdate", () => {
-    const video = player.value?.video;
+  art.on("video:timeupdate", () => {
+    if (token !== mountToken) return;
+    const video = art.video;
     if (!video) return;
     emit("progress", video.currentTime, video.duration || 0);
+  });
+  art.on("video:error", () => {
+    if (token === mountToken) emit("error", useHls ? "HLS 播放失败" : "视频播放失败");
   });
 }
 
 watch(
-  () => [props.src, props.title, props.poster, props.startTime] as const,
+  () => [props.src, props.title, props.format, props.poster] as const,
   () => mountPlayer(),
   { flush: "post" },
 );

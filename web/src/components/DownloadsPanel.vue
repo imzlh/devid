@@ -68,9 +68,13 @@ function formatTime(value: string): string {
       <span>{{ tasks.length }} 个任务</span>
     </div>
     <div class="panel-actions">
-      <button @click="emit('refresh')">刷新</button>
-      <button :disabled="stats.completed === 0" @click="emit('clear')">
-        清理完成
+      <button type="button" @click="emit('refresh')">刷新</button>
+      <button
+        type="button"
+        :disabled="stats.completed + stats.failed === 0"
+        @click="emit('clear')"
+      >
+        清理已结束
       </button>
     </div>
   </header>
@@ -119,6 +123,7 @@ function formatTime(value: string): string {
         <div class="download-actions">
           <button
             v-if="isActiveTask(task)"
+            type="button"
             @click="emit('cancel', task.id)"
           >
             <Square :size="13" :stroke-width="2.5" />
@@ -126,6 +131,7 @@ function formatTime(value: string): string {
           </button>
           <button
             v-if="task.status === 'error' || task.status === 'cancelled'"
+            type="button"
             @click="emit('retry', task.id)"
           >
             <RotateCcw :size="13" :stroke-width="2.5" />
@@ -133,6 +139,7 @@ function formatTime(value: string): string {
           </button>
           <button
             v-if="!isActiveTask(task)"
+            type="button"
             @click="emit('delete', task.id, false)"
           >
             <Trash2 :size="13" :stroke-width="2.5" />
@@ -140,6 +147,7 @@ function formatTime(value: string): string {
           </button>
           <button
             v-if="task.status === 'completed' || task.status === 'error'"
+            type="button"
             @click="emit('delete', task.id, true)"
           >
             <Trash2 :size="13" :stroke-width="2.5" />

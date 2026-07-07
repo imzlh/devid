@@ -9,7 +9,11 @@ import {
 } from "./utils/logger.ts";
 import { createDefaultConfig, getConfig } from "./config/index.ts";
 import { rpcServer } from "./websocket/rpc.ts";
-import { pushDownloadUpdate } from "./websocket/push.ts";
+import {
+  pushDownloadComplete,
+  pushDownloadError,
+  pushDownloadUpdate,
+} from "./websocket/push.ts";
 
 await createDefaultConfig();
 const config = getConfig();
@@ -23,6 +27,9 @@ if (config.server.verboseLogging) {
 
 const videoSourceManager = new VideoSourceManager();
 const downloadManager = new DownloadManager({ serverAddr: SERVER_ADDR });
+const serverStartedAt = Date.now();
+let lastDownloadSnapshot = "";
+const lastDownloadStatuses = new Map<string, string>();
 const app = createApp({
   videoSourceManager,
   downloadManager,
@@ -31,6 +38,9 @@ const app = createApp({
 
 try {
   await downloadManager.loadFromKV();
+  for (const task of downloadManager.getAllDownloadTasks()) {
+    lastDownloadStatuses.set(task.id, task.status);
+  }
 } catch (error) {
   logWarn("加载持久化下载任务失败:", error);
 }
@@ -53,11 +63,31 @@ setInterval(async () => {
 
 setInterval(() => {
   const tasks = downloadManager.getAllDownloadTasks();
-  const activeTasks = tasks.filter((t: { status: string }) =>
-    t.status === "downloading" || t.status === "pending"
-  );
-  if (activeTasks.length > 0) {
+  const snapshot = JSON.stringify(tasks);
+  if (snapshot !== lastDownloadSnapshot) {
     pushDownloadUpdate(tasks);
+    lastDownloadSnapshot = snapshot;
+  }
+
+  const currentIds = new Set<string>();
+  for (const task of tasks) {
+    currentIds.add(task.id);
+    const previous = lastDownloadStatuses.get(task.id);
+    const isNewRuntimeTask = !previous &&
+      task.createTime.getTime() >= serverStartedAt;
+    if ((previous && previous !== task.status) || isNewRuntimeTask) {
+      if (task.status === "completed") {
+        pushDownloadComplete(task);
+      } else if (task.status === "error") {
+        pushDownloadError(task.id, task.error || "下载任务失败");
+      }
+    }
+    lastDownloadStatuses.set(task.id, task.status);
+  }
+  for (const taskId of lastDownloadStatuses.keys()) {
+    if (!currentIds.has(taskId)) {
+      lastDownloadStatuses.delete(taskId);
+    }
   }
 }, 2000);
 

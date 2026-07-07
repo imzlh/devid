@@ -1,37 +1,30 @@
-import { logInfo, logError, logDebug } from "../utils/logger.ts";
+import { logDebug, logError, logInfo } from "../utils/logger.ts";
 
-// WebSocket 客户端连接
 interface WSClient {
   socket: WebSocket;
   id: string;
   subscriptions: Set<string>;
 }
 
-// RPC 消息格式
 interface RPCMessage {
-  id: string;
+  id?: string;
   method: string;
   params?: unknown;
 }
 
-// RPC 响应格式
 interface RPCResponse {
-  id: string;
+  id?: string;
   result?: unknown;
-  error?: string;
+  error?: {
+    code: number;
+    message: string;
+  };
 }
 
-/**
- * WebSocket 管理器
- * 管理客户端连接和消息推送
- */
 export class WebSocketManager {
-  private clients: Map<string, WSClient> = new Map();
+  private clients = new Map<string, WSClient>();
   private clientIdCounter = 0;
 
-  /**
-   * 添加新客户端连接
-   */
   addClient(socket: WebSocket): string {
     const clientId = `client-${++this.clientIdCounter}`;
     const client: WSClient = {
@@ -43,16 +36,12 @@ export class WebSocketManager {
     this.clients.set(clientId, client);
     logInfo(`WebSocket 客户端连接: ${clientId}, 当前连接数: ${this.clients.size}`);
 
-    // 设置消息处理器
     socket.onmessage = (event) => {
       this.handleMessage(clientId, event.data);
     };
-
-    // 设置关闭处理器
     socket.onclose = () => {
       this.removeClient(clientId);
     };
-
     socket.onerror = (error) => {
       logError(`WebSocket 客户端 ${clientId} 错误:`, error);
     };
@@ -60,28 +49,101 @@ export class WebSocketManager {
     return clientId;
   }
 
-  /**
-   * 移除客户端连接
-   */
   removeClient(clientId: string): void {
-    const client = this.clients.get(clientId);
-    if (client) {
-      this.clients.delete(clientId);
+    if (this.clients.delete(clientId)) {
       logInfo(`WebSocket 客户端断开: ${clientId}, 当前连接数: ${this.clients.size}`);
     }
   }
 
-  /**
-   * 处理客户端消息
-   */
+  broadcast(channel: string, data: unknown): void {
+    const payload = JSON.stringify({ method: channel, data });
+    for (const client of this.clients.values()) {
+      if (!client.subscriptions.has(channel)) continue;
+      if (client.socket.readyState === WebSocket.OPEN) {
+        client.socket.send(payload);
+      }
+    }
+  }
+
+  sendToClient(clientId: string, method: string, data: unknown): boolean {
+    const client = this.clients.get(clientId);
+    if (!client || client.socket.readyState !== WebSocket.OPEN) return false;
+    client.socket.send(JSON.stringify({ method, data }));
+    return true;
+  }
+
+  getClientCount(): number {
+    return this.clients.size;
+  }
+
   private handleMessage(clientId: string, data: string): void {
+    const client = this.clients.get(clientId);
+    if (!client) return;
+
     try {
-      const message: RPCMessage = JSON.parse(data);
-      logDebug(`收到 RPC 消息 [${clientId}]:`, message.method);
+      const message = JSON.parse(data) as RPCMessage;
+      logDebug(`收到 WebSocket 消息 [${clientId}]:`, message.method);
 
-      const client = this.clients.get(clientId);
-      if (!client) return;
+      switch (message.method) {
+        case "subscribe": {
+          const channel = this.channelParam(message.params);
+          if (!channel) {
+            this.sendResponse(client, {
+              id: message.id,
+              error: { code: -32602, message: "Invalid channel" },
+            });
+            return;
+          }
+          client.subscriptions.add(channel);
+          this.sendResponse(client, { id: message.id, result: { subscribed: channel } });
+          return;
+        }
+        case "unsubscribe": {
+          const channel = this.channelParam(message.params);
+          if (!channel) {
+            this.sendResponse(client, {
+              id: message.id,
+              error: { code: -32602, message: "Invalid channel" },
+            });
+            return;
+          }
+          client.subscriptions.delete(channel);
+          this.sendResponse(client, { id: message.id, result: { unsubscribed: channel } });
+          return;
+        }
+        default:
+          this.sendResponse(client, {
+            id: message.id,
+            error: { code: -32601, message: `Method not found: ${message.method}` },
+          });
+      }
+    } catch (error) {
+      logError(`处理 WebSocket 消息失败 [${clientId}]:`, error);
+      this.sendResponse(client, {
+        error: { code: -32700, message: "Parse error" },
+      });
+    }
+  }
 
-      // 处理订阅请求
-      if (message.method === "subscribe") {
-        const channel = message.params as string
+  private channelParam(params: unknown): string | null {
+    if (typeof params === "string" && params.trim()) return params.trim();
+    if (Array.isArray(params) && typeof params[0] === "string" && params[0].trim()) {
+      return params[0].trim();
+    }
+    if (
+      params &&
+      typeof params === "object" &&
+      typeof (params as { channel?: unknown }).channel === "string" &&
+      (params as { channel: string }).channel.trim()
+    ) {
+      return (params as { channel: string }).channel.trim();
+    }
+    return null;
+  }
+
+  private sendResponse(client: WSClient, response: RPCResponse): void {
+    if (client.socket.readyState === WebSocket.OPEN) {
+      client.socket.send(JSON.stringify(response));
+    }
+  }
+}

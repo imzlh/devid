@@ -138,6 +138,8 @@ export interface IDownloadTask {
   id: string;
   url: string;
   referer?: string;
+  format?: "m3u8" | "h5";
+  proxy?: URLProxy;
   title: string;
   outputPath: string;
   filePath: string;
@@ -158,6 +160,9 @@ export interface IDownloadTaskPersisted {
   id: string;
   url: string;
   referer?: string;
+  format?: "m3u8" | "h5";
+  proxy?: URLProxy;
+  queued?: boolean;
   title: string;
   outputPath: string;
   filePath: string;
@@ -191,6 +196,7 @@ export interface IM3U8Manifest {
     audio?: Map<string, IM3U8MediaGroup>;
     video?: Map<string, IM3U8MediaGroup>;
     subtitles?: Map<string, IM3U8MediaGroup>;
+    "closed-captions"?: Map<string, IM3U8MediaGroup>;
   };
 }
 
@@ -217,6 +223,7 @@ export interface IM3U8Segment {
 
 export interface IM3U8Variant {
   uri: string;
+  iframe?: boolean;
   bandwidth?: number;
   averageBandwidth?: number;
   codecs?: string;

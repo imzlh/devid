@@ -1,4 +1,4 @@
-import type { PageKey } from "../types/api";
+import type { PageKey } from "../types/api.ts";
 
 export interface RouteState {
   page: PageKey;
@@ -13,35 +13,85 @@ const validPages = new Set<PageKey>([
   "downloads",
   "sources",
 ]);
+const MAX_RESTORED_PAGE = 50;
+const MAX_QUERY_LENGTH = 200;
+
+function normalizePageNum(value: unknown): number {
+  const parsed = typeof value === "number"
+    ? value
+    : /^\d+$/.test(String(value ?? "").trim())
+    ? Number(String(value).trim())
+    : Number.NaN;
+  if (!Number.isSafeInteger(parsed) || parsed < 1) return 1;
+  return Math.min(parsed, MAX_RESTORED_PAGE);
+}
+
+function normalizeQuery(value: unknown): string {
+  return typeof value === "string"
+    ? value.trim().slice(0, MAX_QUERY_LENGTH)
+    : "";
+}
+
+function normalizePage(value: unknown): PageKey | null {
+  return typeof value === "string" && validPages.has(value as PageKey)
+    ? value as PageKey
+    : null;
+}
+
+function currentHash(): string {
+  return typeof globalThis.location?.hash === "string"
+    ? globalThis.location.hash.replace(/^#/, "")
+    : "";
+}
+
+function routeHistory():
+  | { replaceState(data: unknown, unused: string, url?: string | URL | null): void }
+  | null {
+  const history = (globalThis as { history?: unknown }).history;
+  if (!history || typeof history !== "object") return null;
+  const replaceState = (history as { replaceState?: unknown }).replaceState;
+  return typeof replaceState === "function"
+    ? history as {
+      replaceState(data: unknown, unused: string, url?: string | URL | null): void;
+    }
+    : null;
+}
 
 export function readRouteState(): RouteState | null {
-  const raw = window.location.hash.replace(/^#/, "");
+  const raw = currentHash();
   if (!raw) return null;
 
   const params = new URLSearchParams(raw);
-  const page = params.get("page") as PageKey | null;
-  if (!page || !validPages.has(page)) return null;
+  const page = normalizePage(params.get("page"));
+  if (!page) return null;
 
-  const pageNum = Number(params.get("pageNum") || "1");
   return {
     page,
-    query: params.get("search") || "",
-    pageNum: Number.isFinite(pageNum) && pageNum > 0 ? pageNum : 1,
+    query: normalizeQuery(params.get("search")),
+    pageNum: normalizePageNum(params.get("pageNum")),
   };
 }
 
-export function writeRouteState(state: RouteState): void {
+export function writeRouteState(state: RouteState | unknown): void {
+  if (!state || typeof state !== "object") return;
+  const raw = state as Partial<RouteState>;
+  const page = normalizePage(raw.page);
+  if (!page) return;
+
   const params = new URLSearchParams();
-  params.set("page", state.page);
-  if (state.query && state.page === "search") {
-    params.set("search", state.query);
+  params.set("page", page);
+  const query = normalizeQuery(raw.query);
+  if (query && page === "search") {
+    params.set("search", query);
   }
-  if ((state.page === "home" || state.page === "search") && state.pageNum > 1) {
-    params.set("pageNum", String(state.pageNum));
+  const pageNum = normalizePageNum(raw.pageNum);
+  if ((page === "home" || page === "search") && pageNum > 1) {
+    params.set("pageNum", String(pageNum));
   }
 
   const next = params.toString();
-  if (window.location.hash.replace(/^#/, "") !== next) {
-    window.history.replaceState(null, "", `#${next}`);
+  const history = routeHistory();
+  if (currentHash() !== next && history) {
+    history.replaceState(null, "", `#${next}`);
   }
 }

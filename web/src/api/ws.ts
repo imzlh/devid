@@ -6,6 +6,69 @@ type PendingCall = {
 
 type PushHandler<T = unknown> = (data: T) => void;
 
+export type RpcClientMessage =
+  | {
+    kind: "response";
+    id: string;
+    result?: unknown;
+    errorMessage?: string;
+  }
+  | {
+    kind: "push";
+    method: string;
+    data: unknown;
+  };
+
+export function normalizeRpcClientMessage(
+  data: string,
+): RpcClientMessage | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+
+  const message = parsed as {
+    id?: unknown;
+    error?: unknown;
+    result?: unknown;
+    method?: unknown;
+    data?: unknown;
+  };
+
+  if (typeof message.id === "string") {
+    const id = message.id.trim();
+    if (!id) return null;
+    let errorMessage: string | undefined;
+    if (message.error && typeof message.error === "object") {
+      const rawMessage = (message.error as { message?: unknown }).message;
+      errorMessage = typeof rawMessage === "string" && rawMessage.trim()
+        ? rawMessage.trim()
+        : "RPC error";
+    } else if (typeof message.error === "string" && message.error.trim()) {
+      errorMessage = message.error.trim();
+    } else if (message.error) {
+      errorMessage = "RPC error";
+    }
+    return {
+      kind: "response",
+      id,
+      result: message.result,
+      errorMessage,
+    };
+  }
+
+  const method = typeof message.method === "string"
+    ? message.method.trim()
+    : "";
+  if (!method) return null;
+  return { kind: "push", method, data: message.data };
+}
+
 export class RpcClient {
   private ws: WebSocket | null = null;
   private pending = new Map<string, PendingCall>();
@@ -24,10 +87,24 @@ export class RpcClient {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${protocol}//${window.location.host}${path}`;
+    this.rejectPending(new Error("WebSocket disconnected"));
     this.ws?.close();
-    this.ws = new WebSocket(url);
+    const location = globalThis.location;
+    const WebSocketCtor = globalThis.WebSocket;
+    if (!location?.host || typeof WebSocketCtor !== "function") {
+      this.connected = false;
+      return;
+    }
+
+    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    const url = `${protocol}//${location.host}${path}`;
+    try {
+      this.ws = new WebSocketCtor(url);
+    } catch {
+      this.connected = false;
+      this.ws = null;
+      return;
+    }
 
     this.ws.onopen = () => {
       if (connectionId !== this.connectionId) return;
@@ -46,6 +123,11 @@ export class RpcClient {
       if (!this.closedByUser) {
         this.reconnectTimer = setTimeout(() => this.connect(path), 3000);
       }
+    };
+
+    this.ws.onerror = () => {
+      if (connectionId !== this.connectionId) return;
+      this.connected = false;
     };
   }
 
@@ -68,61 +150,72 @@ export class RpcClient {
     }
 
     const id = crypto.randomUUID();
-    const timeoutId = setTimeout(() => {
-      const pending = this.pending.get(id);
-      if (!pending) return;
-      this.pending.delete(id);
-      pending.reject(new Error("RPC timeout"));
-    }, 30000);
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const payload = JSON.stringify({ id, method, params });
+      const createdTimeoutId = setTimeout(() => {
+        const pending = this.pending.get(id);
+        if (!pending) return;
+        this.pending.delete(id);
+        pending.reject(new Error("RPC timeout"));
+      }, 30000);
+      timeoutId = createdTimeoutId;
 
-    const promise = new Promise<T>((resolve, reject) => {
-      this.pending.set(id, {
-        resolve: resolve as (value: unknown) => void,
-        reject,
-        timeoutId,
+      const promise = new Promise<T>((resolve, reject) => {
+        this.pending.set(id, {
+          resolve: resolve as (value: unknown) => void,
+          reject,
+          timeoutId: createdTimeoutId,
+        });
       });
-    });
 
-    this.ws.send(JSON.stringify({ id, method, params }));
-    return promise;
+      this.ws.send(payload);
+      return promise;
+    } catch (error) {
+      this.pending.delete(id);
+      if (timeoutId) clearTimeout(timeoutId);
+      const message = error instanceof Error ? error.message : String(error);
+      return Promise.reject(
+        new Error(`WebSocket send failed${message ? `: ${message}` : ""}`),
+      );
+    }
   }
 
   on<T>(method: string, handler: PushHandler<T>): () => void {
     const set = this.handlers.get(method) ?? new Set<PushHandler>();
     set.add(handler as PushHandler);
     this.handlers.set(method, set);
-    return () => set.delete(handler as PushHandler);
+    return () => {
+      set.delete(handler as PushHandler);
+      if (set.size === 0) this.handlers.delete(method);
+    };
   }
 
   private handleMessage(data: string): void {
-    let message: {
-      id?: string;
-      error?: { message?: string };
-      result?: unknown;
-      method?: string;
-      data?: unknown;
-    };
-    try {
-      message = JSON.parse(data);
-    } catch {
-      return;
-    }
-    if (message.id && this.pending.has(message.id)) {
-      const pending = this.pending.get(message.id)!;
+    const message = normalizeRpcClientMessage(data);
+    if (!message) return;
+
+    if (message.kind === "response") {
+      const pending = this.pending.get(message.id);
+      if (!pending) return;
       this.pending.delete(message.id);
       clearTimeout(pending.timeoutId);
-      if (message.error) {
-        pending.reject(new Error(message.error.message));
+      if (message.errorMessage) {
+        pending.reject(new Error(message.errorMessage));
       } else {
         pending.resolve(message.result);
       }
       return;
     }
 
-    if (message.method) {
-      const handlers = this.handlers.get(message.method);
-      handlers?.forEach((handler) => handler(message.data));
-    }
+    const handlers = this.handlers.get(message.method);
+    handlers?.forEach((handler) => {
+      try {
+        handler(message.data);
+      } catch (error) {
+        console.error(`RPC push handler failed: ${message.method}`, error);
+      }
+    });
   }
 
   private rejectPending(error: Error): void {

@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import {
+  ArrowDown,
   ArrowUp,
-  ChevronLeft,
-  ChevronRight,
   CircleDot,
   Clock,
   Download,
   Home,
+  LoaderCircle,
   Moon,
   RefreshCw,
   Search,
@@ -32,6 +32,8 @@ import {
   getHomeVideos,
   getSourceHealth,
   getSources,
+  normalizeDownloadTasks,
+  normalizeSourceHealthMap,
   parseVideo,
   reinitSource,
   retryDownload,
@@ -52,7 +54,8 @@ import type {
   VideoList,
   PageKey,
 } from "./types/api";
-import { bestQuality } from "./utils/media";
+import { bestQuality, httpUrlOrEmpty } from "./utils/media";
+import { chooseAvailableSourceId, sourceIsAvailable } from "./utils/source";
 import {
   clearRecentVideos,
   getProgressPercent,
@@ -79,7 +82,9 @@ const recentProgress = computed(() =>
 const downloads = ref<DownloadTask[]>([]);
 const page = ref<PageKey>("home");
 const query = ref("");
+const activeSearchQuery = ref("");
 const loading = ref(false);
+const loadingMore = ref(false);
 const error = ref("");
 const theme = ref<Theme>("dark");
 const searchInput = ref<HTMLInputElement | null>(null);
@@ -100,16 +105,20 @@ let offDownloadComplete: (() => void) | null = null;
 let offDownloadError: (() => void) | null = null;
 let offCaptchaRequired: (() => void) | null = null;
 let offCaptchaResolved: (() => void) | null = null;
+let offCaptchaCancelled: (() => void) | null = null;
 let offSourceChange: (() => void) | null = null;
 let offSourceHealth: (() => void) | null = null;
 let sourceSyncTimer: ReturnType<typeof setInterval> | null = null;
 let downloadPollTimer: ReturnType<typeof setInterval> | null = null;
 let pageRequestId = 0;
 let toastId = 0;
+const toastTimers = new Set<ReturnType<typeof window.setTimeout>>();
 const scrollListenerOptions = { passive: true, capture: true } as const;
 
 const activeSource = computed(() =>
-  sources.value.find((source) => source.id === activeSourceId.value) ?? null
+  sources.value.find((source) =>
+    source.id === activeSourceId.value && sourceAvailable(source)
+  ) ?? null
 );
 const sourceAspectRatios = computed(() =>
   Object.fromEntries(
@@ -142,12 +151,9 @@ const currentList = computed(() =>
   page.value === "recent" ? recentVideos.value : videos.value
 );
 const mediaModalOpen = computed(() => Boolean(selectedVideo.value || selectedSeries.value));
-const canPageList = computed(() =>
-  (page.value === "home" || page.value === "search") && videos.value.totalPages > 1
-);
-const canPrevPage = computed(() => canPageList.value && videos.value.currentPage > 1);
-const canNextPage = computed(() =>
-  canPageList.value && videos.value.currentPage < videos.value.totalPages
+const canLoadMoreVideos = computed(() =>
+  (page.value === "home" || page.value === "search") &&
+  videos.value.currentPage < videos.value.totalPages
 );
 const pageSummary = computed(() => {
   if (page.value === "downloads") {
@@ -158,11 +164,11 @@ const pageSummary = computed(() => {
   }
   const total = currentList.value.videos.length;
   const pageText = currentList.value.totalPages > 1
-    ? `第 ${currentList.value.currentPage} / ${currentList.value.totalPages} 页`
+    ? `已加载 ${currentList.value.currentPage} / ${currentList.value.totalPages} 页`
     : "当前页";
   if (page.value === "search") {
-    return query.value.trim()
-      ? `“${query.value.trim()}” · ${total} 个结果 · ${pageText}`
+    return activeSearchQuery.value
+      ? `“${activeSearchQuery.value}” · ${total} 个结果 · ${pageText}`
       : "输入关键词开始搜索";
   }
   if (page.value === "recent") return `${total} 个最近观看`;
@@ -213,7 +219,11 @@ function toggleTheme() {
 function notify(type: ToastItem["type"], message: string, timeout = 2600) {
   const id = ++toastId;
   toasts.value = [{ id, type, message }];
-  window.setTimeout(() => dismissToast(id), timeout);
+  const timer = window.setTimeout(() => {
+    toastTimers.delete(timer);
+    dismissToast(id);
+  }, timeout);
+  toastTimers.add(timer);
 }
 
 function dismissToast(id: number) {
@@ -221,7 +231,28 @@ function dismissToast(id: number) {
 }
 
 function sourceStatus(source: Source): SourceHealth["status"] {
-  return sourceHealth.value[source.id]?.status ?? "unknown";
+  return sourceHealth.value[source.id]?.status ?? source.health?.status ?? "unknown";
+}
+
+function normalizePushedCaptchaRequest(value: unknown): CaptchaRequest | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Partial<CaptchaRequest>;
+  const requestId = nonEmptyText(raw.requestId);
+  if (!requestId) return null;
+  const createdAt = Number(raw.createdAt);
+  return {
+    requestId,
+    captchaPageUrl: nonEmptyText(raw.captchaPageUrl) || undefined,
+    prompt: nonEmptyText(raw.prompt) || "请输入验证码",
+    createdAt: Number.isFinite(createdAt) && createdAt > 0 ? createdAt : Date.now(),
+  };
+}
+
+function sourceAvailable(
+  source: Source,
+  healthMap: Record<string, SourceHealth> = sourceHealth.value,
+): boolean {
+  return sourceIsAvailable(source, healthMap);
 }
 
 function sourceStatusLabel(source: Source): string {
@@ -232,7 +263,7 @@ function sourceStatusLabel(source: Source): string {
 }
 
 function sourceStatusTitle(source: Source): string {
-  const health = sourceHealth.value[source.id];
+  const health = sourceHealth.value[source.id] ?? source.health;
   if (!health) return "暂未获取健康状态";
   if (health.lastError) return health.lastError;
   if (health.circuitOpen) return "该视频源暂时熔断";
@@ -264,59 +295,103 @@ function markItemDownloading(video: VideoItem, downloading: boolean) {
   downloadingItems.value = next;
 }
 
+function mergeVideoList(current: VideoList, next: VideoList): VideoList {
+  const seen = new Set(current.videos.map(videoKey));
+  const appended = next.videos.filter((video) => {
+    const key = videoKey(video);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return {
+    videos: [...current.videos, ...appended],
+    currentPage: next.currentPage,
+    totalPages: next.totalPages,
+  };
+}
+
 async function loadSources() {
   const [allSources, active, health] = await Promise.all([
     getSources(),
     getActiveSource().catch(() => null),
     getSourceHealth().catch(() => null),
   ]);
+  const nextHealth = health?.health ??
+    Object.fromEntries(
+      allSources
+        .filter((source) => source.health)
+        .map((source) => [source.id, source.health as SourceHealth]),
+    );
   sources.value = allSources;
-  sourceHealth.value = health?.health ?? {};
-  activeSourceId.value = active?.id ?? allSources[0]?.id ?? null;
+  sourceHealth.value = nextHealth;
+  activeSourceId.value = chooseAvailableSourceId(
+    allSources,
+    active?.id,
+    nextHealth,
+  );
 }
 
-async function loadHome(nextPage = 1, scroll = true) {
+async function loadHome(nextPage = 1, scroll = true, append = false) {
   const requestId = ++pageRequestId;
-  loading.value = true;
+  if (append) loadingMore.value = true;
+  else {
+    loading.value = true;
+    loadingMore.value = false;
+    activeSearchQuery.value = "";
+  }
   error.value = "";
   page.value = "home";
   try {
     const nextVideos = await getHomeVideos(nextPage);
     if (requestId !== pageRequestId) return;
-    videos.value = nextVideos;
-    if (scroll) scrollToTop();
+    videos.value = append ? mergeVideoList(videos.value, nextVideos) : nextVideos;
+    if (scroll && !append) scrollToTop();
   } catch (err) {
     if (requestId !== pageRequestId) return;
     error.value = err instanceof Error ? err.message : String(err);
     notify("error", error.value);
   } finally {
-    if (requestId === pageRequestId) loading.value = false;
+    if (requestId === pageRequestId) {
+      if (append) loadingMore.value = false;
+      else loading.value = false;
+    }
   }
 }
 
-async function runSearch(nextPage = 1, scroll = true) {
-  const term = query.value.trim();
-  query.value = term;
+async function runSearch(nextPage = 1, scroll = true, append = false) {
+  const term = append ? activeSearchQuery.value : query.value.trim();
+  if (!append) {
+    query.value = term;
+    activeSearchQuery.value = term;
+  }
   if (!term) {
+    activeSearchQuery.value = "";
     await loadHome();
     return;
   }
 
   const requestId = ++pageRequestId;
-  loading.value = true;
+  if (append) loadingMore.value = true;
+  else {
+    loading.value = true;
+    loadingMore.value = false;
+  }
   error.value = "";
   page.value = "search";
   try {
     const nextVideos = await searchVideos(term, nextPage);
     if (requestId !== pageRequestId) return;
-    videos.value = nextVideos;
-    if (scroll) scrollToTop();
+    videos.value = append ? mergeVideoList(videos.value, nextVideos) : nextVideos;
+    if (scroll && !append) scrollToTop();
   } catch (err) {
     if (requestId !== pageRequestId) return;
     error.value = err instanceof Error ? err.message : String(err);
     notify("error", error.value);
   } finally {
-    if (requestId === pageRequestId) loading.value = false;
+    if (requestId === pageRequestId) {
+      if (append) loadingMore.value = false;
+      else loading.value = false;
+    }
   }
 }
 
@@ -388,30 +463,60 @@ function opensSeriesPanel(video: VideoItem): boolean {
   return video.contentType === "series" || video.contentType === "infinite";
 }
 
+function nonEmptyText(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function playableVideoOrNull(video: VideoItem): VideoItem | null {
+  const url = httpUrlOrEmpty(video.url);
+  const title = nonEmptyText(video.title);
+  const source = nonEmptyText(video.source);
+  if (!url || !title || !source) return null;
+  return {
+    ...video,
+    id: nonEmptyText(video.id) || url,
+    title,
+    source,
+    url,
+    thumbnail: httpUrlOrEmpty(video.thumbnail),
+  };
+}
+
 async function directDownload(video: VideoItem) {
   if (opensSeriesPanel(video)) {
     selectedSeries.value = video;
     selectedVideo.value = null;
     return;
   }
-  if (downloadingItems.value.has(videoKey(video))) return;
+  const playableVideo = playableVideoOrNull(video);
+  if (!playableVideo) {
+    error.value = "无效的视频地址";
+    notify("error", error.value);
+    return;
+  }
+  if (downloadingItems.value.has(videoKey(playableVideo))) return;
 
   error.value = "";
-  markItemDownloading(video, true);
+  markItemDownloading(playableVideo, true);
   try {
-    const urls = await parseVideo(video.url, video.source);
+    const urls = await parseVideo(playableVideo.url, playableVideo.source);
     const target = bestQuality(urls);
     if (!target) throw new Error("没有可下载地址");
-    const task = await createDownload(video.title, target.url, video.url);
+    const task = await createDownload(
+      playableVideo.title,
+      target.url,
+      target.referrer ?? playableVideo.url,
+      target,
+    );
     const started = await startDownload(task.id);
     if (!started.success) throw new Error("下载任务启动失败");
     downloads.value = await getDownloads();
-    notify("success", `已加入下载队列：${video.title}`);
+    notify("success", `已加入下载队列：${playableVideo.title}`);
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err);
     notify("error", error.value);
   } finally {
-    markItemDownloading(video, false);
+    markItemDownloading(playableVideo, false);
   }
 }
 
@@ -422,27 +527,52 @@ function selectItem(video: VideoItem) {
     return;
   }
 
-  selectedVideo.value = video;
+  const playableVideo = playableVideoOrNull(video);
+  if (!playableVideo) {
+    error.value = "无效的视频地址";
+    notify("error", error.value);
+    return;
+  }
+
+  selectedVideo.value = playableVideo;
   selectedSeries.value = null;
 }
 
-function episodeAsVideo(episode: Episode, series: SeriesDetail): VideoItem {
+function episodeAsVideo(episode: Episode, series: SeriesDetail): VideoItem | null {
+  const url = httpUrlOrEmpty(episode.url);
+  const source = nonEmptyText(series.source);
+  if (!url || !source) return null;
+  const title = nonEmptyText(episode.title) ||
+    `第 ${episode.episodeNumber || 1} 集`;
+  const seriesTitle = nonEmptyText(series.title) || "选集";
   return {
-    id: `${episode.seriesId || series.seriesId}:${episode.id}:${episode.url}`,
-    title: `${series.title} - ${episode.title}`,
-    thumbnail: episode.thumbnail || series.thumbnail,
-    url: episode.url,
-    source: series.source,
+    id: `${episode.seriesId || series.seriesId}:${episode.id || url}:${url}`,
+    title: `${seriesTitle} - ${title}`,
+    thumbnail: httpUrlOrEmpty(episode.thumbnail) || httpUrlOrEmpty(series.thumbnail),
+    url,
+    source,
     contentType: "video",
   };
 }
 
 function playEpisode(episode: Episode, series: SeriesDetail) {
-  selectedVideo.value = episodeAsVideo(episode, series);
+  const video = episodeAsVideo(episode, series);
+  if (!video) {
+    error.value = "无效的选集地址";
+    notify("error", error.value);
+    return;
+  }
+  selectedVideo.value = video;
 }
 
 async function downloadEpisode(episode: Episode, series: SeriesDetail) {
-  await directDownload(episodeAsVideo(episode, series));
+  const video = episodeAsVideo(episode, series);
+  if (!video) {
+    error.value = "无效的选集地址";
+    notify("error", error.value);
+    return;
+  }
+  await directDownload(video);
 }
 
 async function downloadEpisodes(episodes: Episode[], series: SeriesDetail) {
@@ -455,10 +585,16 @@ async function downloadEpisodes(episodes: Episode[], series: SeriesDetail) {
     for (const episode of episodes) {
       try {
         const video = episodeAsVideo(episode, series);
+        if (!video) throw new Error("无效的选集地址");
         const urls = await parseVideo(video.url, video.source);
         const target = bestQuality(urls);
         if (!target) throw new Error("没有可下载地址");
-        const task = await createDownload(video.title, target.url, video.url);
+        const task = await createDownload(
+          video.title,
+          target.url,
+          target.referrer ?? video.url,
+          target,
+        );
         const started = await startDownload(task.id);
         if (!started.success) throw new Error("下载任务启动失败");
         successCount++;
@@ -487,7 +623,8 @@ async function downloadEpisodes(episodes: Episode[], series: SeriesDetail) {
 async function cancelTask(id: string) {
   error.value = "";
   try {
-    await cancelDownload(id);
+    const result = await cancelDownload(id);
+    if (!result.success) throw new Error("取消下载任务失败");
     downloads.value = await getDownloads();
     notify("success", "已取消下载任务");
   } catch (err) {
@@ -500,7 +637,8 @@ async function cancelTask(id: string) {
 async function retryTask(id: string) {
   error.value = "";
   try {
-    await retryDownload(id);
+    const result = await retryDownload(id);
+    if (!result.success) throw new Error("重新加入下载队列失败");
     downloads.value = await getDownloads();
     notify("success", "已重新加入下载队列");
   } catch (err) {
@@ -513,7 +651,8 @@ async function retryTask(id: string) {
 async function deleteTask(id: string, deleteFile: boolean) {
   error.value = "";
   try {
-    await deleteDownload(id, deleteFile);
+    const result = await deleteDownload(id, deleteFile);
+    if (!result.success) throw new Error("删除下载任务失败");
     downloads.value = await getDownloads();
     notify("success", deleteFile ? "已删除任务和文件" : "已删除任务");
   } catch (err) {
@@ -526,9 +665,15 @@ async function deleteTask(id: string, deleteFile: boolean) {
 async function clearCompleted() {
   error.value = "";
   try {
-    await clearCompletedDownloads();
+    const result = await clearCompletedDownloads();
+    if (!result.success) throw new Error("清理已结束任务失败");
     downloads.value = await getDownloads();
-    notify("success", "已清理完成任务");
+    notify(
+      result.clearedCount > 0 ? "success" : "info",
+      result.clearedCount > 0
+        ? `已清理 ${result.clearedCount} 个已结束任务`
+        : "没有可清理的任务",
+    );
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err);
     notify("error", error.value);
@@ -578,11 +723,13 @@ async function reinitializeSource(sourceId: string) {
   try {
     const result = await reinitSource(sourceId);
     if (requestId !== pageRequestId) return;
-    if (!result.success) throw new Error("重初始化视频源失败");
-    await loadSources();
+    await loadSources().catch(() => null);
     if (requestId !== pageRequestId) return;
+    if (!result.success) throw new Error("重初始化视频源失败");
     notify("success", "视频源已重初始化");
   } catch (err) {
+    if (requestId !== pageRequestId) return;
+    await loadSources().catch(() => null);
     if (requestId !== pageRequestId) return;
     error.value = err instanceof Error ? err.message : String(err);
     notify("error", error.value);
@@ -598,18 +745,32 @@ async function reinitializeSource(sourceId: string) {
 async function syncSourceState() {
   try {
     const previous = activeSourceId.value;
-    const active = await getActiveSource();
-    if (active.id && active.id !== previous) {
-      activeSourceId.value = active.id;
+    const [active, health] = await Promise.all([
+      getActiveSource(),
+      getSourceHealth().catch(() => null),
+    ]);
+    if (health) sourceHealth.value = health.health;
+    const nextActiveId = chooseAvailableSourceId(
+      sources.value,
+      active.id,
+      sourceHealth.value,
+    );
+    if (nextActiveId !== previous) {
+      activeSourceId.value = nextActiveId;
       selectedVideo.value = null;
       selectedSeries.value = null;
-      if (page.value === "home") await loadHome(videos.value.currentPage, false);
-      if (page.value === "search" && query.value.trim()) {
-        await runSearch(videos.value.currentPage, false);
+      const ownSwitchInFlight = sourceActionKind.value === "switch" &&
+        sourceActionId.value === nextActiveId;
+      if (nextActiveId && !ownSwitchInFlight) {
+        if (page.value === "home") await loadHome(1, false);
+        if (page.value === "search" && activeSearchQuery.value) {
+          const draftQuery = query.value;
+          query.value = activeSearchQuery.value;
+          await runSearch(1, false);
+          query.value = draftQuery;
+        }
       }
     }
-    const health = await getSourceHealth().catch(() => null);
-    if (health) sourceHealth.value = health.health;
   } catch {
     // 后端不可用时保留当前视图状态。
   }
@@ -663,13 +824,23 @@ function scrollToTop() {
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
-async function goAdjacentPage(delta: -1 | 1) {
-  if (loading.value || !canPageList.value) return;
-  const nextPage = videos.value.currentPage + delta;
-  if (nextPage < 1 || nextPage > videos.value.totalPages) return;
-  if (page.value === "search") await runSearch(nextPage);
-  else await loadHome(nextPage);
-  scrollToTop();
+async function loadMoreVideos() {
+  if (loading.value || loadingMore.value || !canLoadMoreVideos.value) return;
+  const nextPage = videos.value.currentPage + 1;
+  if (page.value === "search") await runSearch(nextPage, false, true);
+  else await loadHome(nextPage, false, true);
+}
+
+async function restorePagedList(targetPage: number, mode: "home" | "search") {
+  const safeTarget = Math.max(1, Math.floor(targetPage || 1));
+  if (mode === "search") await runSearch(1);
+  else await loadHome(1);
+
+  for (let nextPage = 2; nextPage <= safeTarget; nextPage++) {
+    if (!canLoadMoreVideos.value) break;
+    if (mode === "search") await runSearch(nextPage, false, true);
+    else await loadHome(nextPage, false, true);
+  }
 }
 
 function handleGlobalKeydown(event: KeyboardEvent) {
@@ -718,7 +889,8 @@ async function bootstrap() {
     const route = readRouteState();
     if (route?.page === "search") {
       query.value = route.query;
-      await runSearch(route.pageNum);
+      activeSearchQuery.value = route.query.trim();
+      await restorePagedList(route.pageNum, "search");
     } else if (route?.page === "recent") {
       loadRecent();
     } else if (route?.page === "downloads") {
@@ -726,14 +898,14 @@ async function bootstrap() {
     } else if (route?.page === "sources") {
       page.value = "sources";
     } else {
-      await loadHome(route?.pageNum ?? 1);
+      await restorePagedList(route?.page === "home" ? route.pageNum : 1, "home");
     }
 
     downloads.value = await getDownloads().catch(() => []);
     rpc.connect();
     setRpcClient(rpc);
     offDownloadUpdate = rpc.on<DownloadTask[]>("download:update", (tasks) => {
-      downloads.value = tasks;
+      downloads.value = normalizeDownloadTasks(tasks);
     });
     offDownloadComplete = rpc.on("download:complete", () => {
       notify("success", "下载任务已完成");
@@ -743,17 +915,22 @@ async function bootstrap() {
       notify("error", "下载任务失败");
       syncDownloads();
     });
-    offCaptchaRequired = rpc.on<CaptchaRequest>("captcha:required", (request) => {
-      captchaRequest.value = request;
+    offCaptchaRequired = rpc.on<unknown>("captcha:required", (request) => {
+      const normalized = normalizePushedCaptchaRequest(request);
+      if (normalized) captchaRequest.value = normalized;
     });
     offCaptchaResolved = rpc.on("captcha:resolved", () => {
+      captchaRequest.value = null;
+    });
+    offCaptchaCancelled = rpc.on("captcha:cancelled", () => {
       captchaRequest.value = null;
     });
     offSourceChange = rpc.on("source:change", () => {
       syncSourceState();
     });
-    offSourceHealth = rpc.on<Record<string, SourceHealth>>("source:health", (health) => {
-      sourceHealth.value = health;
+    offSourceHealth = rpc.on<unknown>("source:health", (health) => {
+      const normalized = normalizeSourceHealthMap(health);
+      if (normalized) sourceHealth.value = normalized;
     });
     sourceSyncTimer = setInterval(syncSourceState, 30000);
     downloadPollTimer = setInterval(() => {
@@ -781,10 +958,13 @@ onUnmounted(() => {
   offDownloadError?.();
   offCaptchaRequired?.();
   offCaptchaResolved?.();
+  offCaptchaCancelled?.();
   offSourceChange?.();
   offSourceHealth?.();
   if (sourceSyncTimer) clearInterval(sourceSyncTimer);
   if (downloadPollTimer) clearInterval(downloadPollTimer);
+  for (const timer of toastTimers) window.clearTimeout(timer);
+  toastTimers.clear();
   window.removeEventListener("keydown", handleGlobalKeydown);
   window.removeEventListener("scroll", handleScroll);
   document.removeEventListener("scroll", handleScroll, scrollListenerOptions);
@@ -804,11 +984,11 @@ watch(
 );
 
 watch(
-  [page, query, videos],
+  [page, activeSearchQuery, videos],
   () => {
     writeRouteState({
       page: page.value,
-      query: query.value.trim(),
+      query: activeSearchQuery.value,
       pageNum: page.value === "home" || page.value === "search"
         ? videos.value.currentPage
         : 1,
@@ -830,15 +1010,16 @@ watch(
       </div>
 
       <nav class="nav" aria-label="主导航">
-        <button :class="{ active: page === 'home' }" @click="loadHome()">
+        <button type="button" :class="{ active: page === 'home' }" @click="loadHome()">
           <b><Home :size="18" :stroke-width="2.1" /></b>
           <span>首页</span>
         </button>
-        <button :class="{ active: page === 'recent' }" @click="loadRecent">
+        <button type="button" :class="{ active: page === 'recent' }" @click="loadRecent">
           <b><Clock :size="18" :stroke-width="2.1" /></b>
           <span>最近</span>
         </button>
         <button
+          type="button"
           :class="{ active: page === 'downloads' }"
           @click="loadDownloads()"
         >
@@ -846,7 +1027,7 @@ watch(
           <span>下载</span>
           <small v-if="activeDownloads">{{ activeDownloads }}</small>
         </button>
-        <button :class="{ active: page === 'sources' }" @click="showSources">
+        <button type="button" :class="{ active: page === 'sources' }" @click="showSources">
           <b><CircleDot :size="18" :stroke-width="2.1" /></b>
           <span>视频源</span>
         </button>
@@ -1009,8 +1190,9 @@ watch(
           <div class="source-actions">
             <button
               class="primary-button"
+              :class="{ 'current-source': source.id === activeSourceId }"
               type="button"
-              :disabled="loading || source.id === activeSourceId"
+              :disabled="loading || !sourceAvailable(source) || source.id === activeSourceId"
               @click="switchSource(source.id)"
             >
               {{
@@ -1062,6 +1244,7 @@ watch(
           :items="page === 'recent' ? recentVideos.videos : videos.videos"
           :progress="page === 'recent' ? recentProgress : undefined"
           :loading="loading"
+          :loading-more="loadingMore"
           :current-page="page === 'recent' ? recentVideos.currentPage : videos.currentPage"
           :total-pages="page === 'recent' ? recentVideos.totalPages : videos.totalPages"
           :source-aspect-ratios="sourceAspectRatios"
@@ -1071,7 +1254,7 @@ watch(
           :empty-title="videoEmptyTitle"
           :empty-text="videoEmptyText"
           :removable="page === 'recent'"
-          @page="page === 'search' ? runSearch($event) : loadHome($event)"
+          @load-more="loadMoreVideos"
           @select="selectItem"
           @download="directDownload"
           @remove="removeRecent"
@@ -1103,19 +1286,10 @@ watch(
     </div>
 
     <div
-      v-if="!mediaModalOpen && !captchaRequest && (isScrolled || canPageList)"
+      v-if="!mediaModalOpen && !captchaRequest && (isScrolled || canLoadMoreVideos)"
       class="quick-nav"
       aria-label="快速导航"
     >
-      <button
-        type="button"
-        :disabled="loading || !canPrevPage"
-        aria-label="上一页"
-        title="上一页"
-        @click="goAdjacentPage(-1)"
-      >
-        <ChevronLeft :size="18" :stroke-width="2.3" />
-      </button>
       <button
         type="button"
         :disabled="!isScrolled"
@@ -1127,12 +1301,18 @@ watch(
       </button>
       <button
         type="button"
-        :disabled="loading || !canNextPage"
-        aria-label="下一页"
-        title="下一页"
-        @click="goAdjacentPage(1)"
+        :disabled="loading || loadingMore || !canLoadMoreVideos"
+        aria-label="加载更多"
+        title="加载更多"
+        @click="loadMoreVideos"
       >
-        <ChevronRight :size="18" :stroke-width="2.3" />
+        <LoaderCircle
+          v-if="loadingMore"
+          class="spin-icon"
+          :size="18"
+          :stroke-width="2.3"
+        />
+        <ArrowDown v-else :size="18" :stroke-width="2.3" />
       </button>
     </div>
 

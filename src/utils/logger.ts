@@ -48,7 +48,7 @@ function getLevelName(level: LogLevel): string {
 }
 
 // 格式化日志消息
-function formatMessage(level: LogLevel, message: string, source?: any): string {
+function formatMessage(level: LogLevel, message: string, source?: unknown): string {
     const parts: string[] = [];
 
     // 添加时间戳
@@ -71,25 +71,25 @@ function formatMessage(level: LogLevel, message: string, source?: any): string {
 }
 
 // 日志函数
-export function logDebug(message: string, source?: any): void {
+export function logDebug(message: string, source?: unknown): void {
     if (config.level <= LogLevel.DEBUG) {
         console.log(formatMessage(LogLevel.DEBUG, message, source));
     }
 }
 
-export function logInfo(message: string, source?: any): void {
+export function logInfo(message: string, source?: unknown): void {
     if (config.level <= LogLevel.INFO) {
         console.log(formatMessage(LogLevel.INFO, message, source));
     }
 }
 
-export function logWarn(message: string, source?: any): void {
+export function logWarn(message: string, source?: unknown): void {
     if (config.level <= LogLevel.WARN) {
         console.warn(formatMessage(LogLevel.WARN, message, source));
     }
 }
 
-export function logError(message: string, source?: any): void {
+export function logError(message: string, source?: unknown): void {
     if (config.level <= LogLevel.ERROR) {
         console.error(formatMessage(LogLevel.ERROR, message, source));
     }

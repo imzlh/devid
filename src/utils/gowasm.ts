@@ -139,9 +139,15 @@ export default class GoVM {
         });
     }
 
+    private exports(): WebAssembly.Exports {
+        if (!this._inst) {
+            throw new Error("Go WASM instance has not been initialized");
+        }
+        return this._inst.exports;
+    }
+
     get importObject(): WebAssembly.Imports {
-        const that = this;
-        const mem = () => new DataView((that._inst!.exports.memory as WebAssembly.Memory).buffer);
+        const mem = () => new DataView((this.exports().memory as WebAssembly.Memory).buffer);
 
         const setInt64 = (addr: number, v: bigint | number) => {
             mem().setUint32(addr + 0, Number(v), true);
@@ -153,7 +159,7 @@ export default class GoVM {
             if (f === 0) return undefined;
             if (!isNaN(f)) return f;
             const id = mem().getUint32(addr, true);
-            return that._values[id];
+            return this._values[id];
         };
 
         const storeValue = (addr: number, v: any) => {
@@ -178,14 +184,14 @@ export default class GoVM {
                 case true: mem().setUint32(addr + 4, nanHead, true); mem().setUint32(addr, 3, true); return;
                 case false: mem().setUint32(addr + 4, nanHead, true); mem().setUint32(addr, 4, true); return;
             }
-            let id = that._ids.get(v);
+            let id = this._ids.get(v);
             if (id === undefined) {
-                id = that._idPool.pop() ?? that._values.length;
-                that._values[id] = v;
-                that._goRefCounts[id] = 0;
-                that._ids.set(v, id);
+                id = this._idPool.pop() ?? this._values.length;
+                this._values[id] = v;
+                this._goRefCounts[id] = 0;
+                this._ids.set(v, id);
             }
-            that._goRefCounts[id]++;
+            this._goRefCounts[id]++;
             let typeFlag = 1;
             if (typeof v === "string") typeFlag = 2;
             else if (typeof v === "symbol") typeFlag = 3;
@@ -194,8 +200,8 @@ export default class GoVM {
             mem().setUint32(addr, id, true);
         };
 
-        const loadSlice = (addr: number, len: number) => new Uint8Array((that._inst!.exports.memory as WebAssembly.Memory).buffer, addr, len);
-        const loadString = (ptr: number, len: number) => decoder.decode(new DataView((that._inst!.exports.memory as WebAssembly.Memory).buffer, ptr, len));
+        const loadSlice = (addr: number, len: number) => new Uint8Array((this.exports().memory as WebAssembly.Memory).buffer, addr, len);
+        const loadString = (ptr: number, len: number) => decoder.decode(new DataView((this.exports().memory as WebAssembly.Memory).buffer, ptr, len));
 
         const timeOrigin = Date.now() - performance.now();
 
@@ -212,11 +218,11 @@ export default class GoVM {
                                 const c = mem().getUint8(ptr + j);
                                 if (c === 13) continue;
                                 if (c === 10) {
-                                    const line = decoder.decode(new Uint8Array(that._logLine));
-                                    that._logLine = [];
+                                    const line = decoder.decode(new Uint8Array(this._logLine));
+                                    this._logLine = [];
                                     console.log(line);
                                 } else {
-                                    that._logLine.push(c);
+                                    this._logLine.push(c);
                                 }
                             }
                             nwritten += len;
@@ -226,10 +232,10 @@ export default class GoVM {
                     return 0;
                 },
                 proc_exit: (code: number) => {
-                    that.exited = true;
-                    that._resolveExitPromise?.();
-                    if (typeof that.sandboxGlobal.process?.exit === "function") {
-                        that.sandboxGlobal.process.exit(code);
+                    this.exited = true;
+                    this._resolveExitPromise?.();
+                    if (typeof this.sandboxGlobal.process?.exit === "function") {
+                        this.sandboxGlobal.process.exit(code);
                     }
                 },
             },
@@ -237,20 +243,22 @@ export default class GoVM {
                 "runtime.ticks": () => timeOrigin + performance.now(),
                 "runtime.sleepTicks": (timeout: number) => {
                     setTimeout(() => {
-                        // @ts-ignore - scheduler
-                        that._inst!.exports.go_scheduler?.();
-                        if (that.exited) that._resolveExitPromise?.();
+                        const exports = this._inst?.exports as WebAssembly.Exports & {
+                            go_scheduler?: () => void;
+                        } | undefined;
+                        exports?.go_scheduler?.();
+                        if (this.exited) this._resolveExitPromise?.();
                     }, timeout);
                 },
                 "syscall/js.finalizeRef": (sp: number) => {
                     const id = mem().getUint32(sp + 8, true);
-                    if (id >= that._goRefCounts.length || id < 0) return;
-                    that._goRefCounts[id]--;
-                    if (that._goRefCounts[id] === 0) {
-                        const v = that._values[id];
-                        that._values[id] = undefined;
-                        that._ids.delete(v);
-                        that._idPool.push(id);
+                    if (id >= this._goRefCounts.length || id < 0) return;
+                    this._goRefCounts[id]--;
+                    if (this._goRefCounts[id] === 0) {
+                        const v = this._values[id];
+                        this._values[id] = undefined;
+                        this._ids.delete(v);
+                        this._idPool.push(id);
                     }
                 },
                 // ... all other syscall/js.* unchanged from your version
@@ -260,9 +268,9 @@ export default class GoVM {
                 },
                 "syscall/js.valueGet": (retval: number, v_addr: number, p_ptr: number, p_len: number) => {
                     const prop = loadString(p_ptr, p_len);
-                    let value = loadValue(v_addr);
+                    const value = loadValue(v_addr);
                     let result = Reflect.get(value, prop);
-                    if (result === undefined && value === that.sandboxGlobal) {
+                    if (result === undefined && value === this.sandboxGlobal) {
                         result = Reflect.get(globalThis, prop);
                     }
                     storeValue(retval, result);
@@ -377,7 +385,7 @@ export default class GoVM {
         });
 
         // Start the Go program (synchronous start)
-        const start = this._inst.exports._start ?? this._inst.exports.run;
+        const start = this.exports()._start ?? this.exports().run;
         if (typeof start === "function") {
             start();
         }
@@ -395,7 +403,7 @@ export default class GoVM {
         if (this.exited) {
             throw new Error("Go program has already exited");
         }
-        const resume = this._inst!.exports.resume ?? this._inst!.exports.go_scheduler;
+        const resume = this.exports().resume ?? this.exports().go_scheduler;
         if (typeof resume === "function") {
             resume();
         }

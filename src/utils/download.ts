@@ -1,11 +1,18 @@
-import { IDownloadTask, IDownloadTaskPersisted } from "../types/index.ts";
+import {
+  IDownloadTask,
+  IDownloadTaskPersisted,
+  URLProxy,
+} from "../types/index.ts";
 import { logDebug, logError, logInfo, logWarn } from "./logger.ts";
 import { getConfig } from "../config/index.ts";
-import { basename, join } from "node:path";
+import { inferMediaFormat, isPlayableMediaUrl } from "./media-format.ts";
+import { validateUrl } from "./validation.ts";
+import { basename, extname, join, normalize } from "node:path";
 import { mergeReadableStreams } from "@std/streams";
 
 // 清理间隔固定值
 const TASK_CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5分钟
+const BUILTIN_DEFAULT_OUTPUT_PATH = "./downloads";
 
 // 下载统计
 interface DownloadStats {
@@ -17,10 +24,19 @@ interface DownloadStats {
 
 interface DownloadManagerOptions {
   serverAddr?: string;
+  autoProcess?: boolean;
 }
 
 // 延迟函数
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const DOWNLOAD_STATUSES = new Set<IDownloadTask["status"]>([
+  "pending",
+  "downloading",
+  "completed",
+  "error",
+  "cancelled",
+]);
 
 // 格式化字节
 function formatBytes(bytes: number): string {
@@ -31,34 +47,185 @@ function formatBytes(bytes: number): string {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
 }
 
+function validDateOrNow(value: string | Date | undefined): Date {
+  const date = value instanceof Date ? value : new Date(value ?? Date.now());
+  return Number.isFinite(date.getTime()) ? date : new Date();
+}
+
+function optionalValidDate(value: string | Date | undefined): Date | undefined {
+  if (!value) return undefined;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isFinite(date.getTime()) ? date : undefined;
+}
+
+function normalizeProgress(value: unknown): number {
+  const progress = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(progress) ? Math.max(0, Math.min(100, progress)) : 0;
+}
+
+function normalizeNonNegativeInteger(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function normalizePositiveInteger(
+  value: unknown,
+  fallback?: number,
+): number | undefined {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (Number.isSafeInteger(parsed) && parsed > 0) return parsed;
+  return fallback && fallback > 0 ? fallback : undefined;
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : undefined;
+}
+
+function normalizePersistedFormat(
+  value: unknown,
+  url: string,
+): IDownloadTask["format"] {
+  return inferMediaFormat(
+    url,
+    typeof value === "string" ? value : undefined,
+  );
+}
+
+function normalizePersistedProxy(value: unknown): IDownloadTask["proxy"] {
+  return value === URLProxy.NONE || value === URLProxy.LOCAL ||
+      value === URLProxy.REMOTE
+    ? value
+    : undefined;
+}
+
+function normalizeTaskFormat(
+  value: unknown,
+  url: string,
+): IDownloadTask["format"] {
+  return inferMediaFormat(
+    url,
+    typeof value === "string" ? value : undefined,
+  );
+}
+
+function normalizeTaskProxy(value: unknown): IDownloadTask["proxy"] {
+  return value === URLProxy.NONE || value === URLProxy.LOCAL ||
+      value === URLProxy.REMOTE
+    ? value
+    : undefined;
+}
+
+function normalizeOptionalHttpUrl(value: unknown): string | undefined {
+  if (!validateUrl(value)) return undefined;
+  return new URL((value as string).trim()).href;
+}
+
+function nonEmptyStringOr(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : fallback;
+}
+
+function validateRequiredTaskId(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function normalizeTaskId(value: unknown): string | undefined {
+  return validateRequiredTaskId(value) ? value.trim() : undefined;
+}
+
+export function splitDownloadFileName(fileName: string): {
+  base: string;
+  extension: string;
+} {
+  const extension = extname(fileName);
+  if (!extension || extension === fileName) {
+    return { base: fileName || "unnamed", extension: "" };
+  }
+  const base = fileName.slice(0, -extension.length) || "unnamed";
+  return { base, extension };
+}
+
+export function taskFilePathMatchesOutput(
+  task: Pick<IDownloadTask, "outputPath" | "fileName" | "filePath">,
+): boolean {
+  if (!task.outputPath || !task.fileName || !task.filePath) return false;
+  return normalize(task.filePath) ===
+    normalize(join(task.outputPath, task.fileName));
+}
+
+function removeTaskFileSync(task: IDownloadTask): boolean {
+  if (!task.filePath) return false;
+  if (!taskFilePathMatchesOutput(task)) {
+    logWarn(
+      `跳过删除异常任务文件路径: task=${task.id}, filePath=${task.filePath}`,
+    );
+    return false;
+  }
+  Deno.removeSync(task.filePath);
+  return true;
+}
+
 // 带超时的 Promise
 function withTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
   operationName: string,
   signal?: AbortSignal,
+  onTimeout?: () => void,
 ): Promise<T> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error(`${operationName} 已取消`));
+      return;
+    }
+
+    let abortHandler: (() => void) | null = null;
+    let settled = false;
+    let timedOut = false;
+    let cleanupGraceId: ReturnType<typeof setTimeout> | null = null;
+    const timeoutError = new Error(`${operationName} 超时(${timeoutMs}ms)`);
+
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      if (cleanupGraceId) clearTimeout(cleanupGraceId);
+      if (signal && abortHandler) {
+        signal.removeEventListener("abort", abortHandler);
+      }
+      fn();
+    };
+
     const timeoutId = setTimeout(() => {
-      reject(new Error(`${operationName} 超时(${timeoutMs}ms)`));
+      timedOut = true;
+      try {
+        onTimeout?.();
+      } catch (error) {
+        logWarn(`${operationName} 超时回调失败`, error);
+      }
+      cleanupGraceId = setTimeout(() => {
+        settle(() => reject(timeoutError));
+      }, 5000);
     }, timeoutMs);
 
     // 监听外部取消信号
     if (signal) {
-      signal.addEventListener("abort", () => {
-        clearTimeout(timeoutId);
-        reject(new Error(`${operationName} 已取消`));
-      }, { once: true });
+      abortHandler = () => {
+        if (timedOut) return;
+        settle(() => reject(new Error(`${operationName} 已取消`)));
+      };
+      signal.addEventListener("abort", abortHandler, { once: true });
     }
 
     promise
       .then((result) => {
-        clearTimeout(timeoutId);
-        resolve(result);
+        settle(() => timedOut ? reject(timeoutError) : resolve(result));
       })
       .catch((error) => {
-        clearTimeout(timeoutId);
-        reject(error);
+        settle(() => reject(timedOut ? timeoutError : error));
       });
   });
 }
@@ -76,10 +243,12 @@ export class DownloadManager {
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private taskIdCounter = 0;
   private serverAddr: string;
+  private autoProcess: boolean;
 
   constructor(options: DownloadManagerOptions = {}) {
     this.serverAddr = options.serverAddr ??
       `http://localhost:${getConfig().server.port}`;
+    this.autoProcess = options.autoProcess ?? true;
     // 启动定期清理
     this.startCleanupTimer();
     logInfo("下载管理器已初始化");
@@ -93,18 +262,22 @@ export class DownloadManager {
   createDownloadTask(
     url: string,
     title: string,
-    outputPath: string = "./downloads",
+    outputPath: string = getConfig().download.defaultOutputPath,
     referer?: string,
+    media?: Pick<IDownloadTask, "format" | "proxy">,
   ): string {
-    // 验证URL
-    try {
-      new URL(url);
-    } catch {
+    if (!validateUrl(url)) {
       throw new Error(`无效的下载URL: ${url}`);
     }
+    const normalizedUrl = new URL(url.trim()).href;
+    if (!isPlayableMediaUrl(normalizedUrl, media?.format)) {
+      throw new Error(`下载URL不是直连媒体地址: ${url}`);
+    }
+    const normalizedReferer = normalizeOptionalHttpUrl(referer);
 
+    const normalizedTitle = nonEmptyStringOr(title, "未命名下载");
     const taskId = `dl_${Date.now()}_${++this.taskIdCounter}`;
-    const safeTitle = this.sanitizeFileName(title);
+    const safeTitle = this.sanitizeFileName(normalizedTitle);
     const fileName = `${safeTitle}.mp4`;
 
     // 清理路径
@@ -113,26 +286,24 @@ export class DownloadManager {
 
     const task: IDownloadTask = {
       id: taskId,
-      url,
-      title,
+      url: normalizedUrl,
+      format: normalizeTaskFormat(media?.format, normalizedUrl),
+      proxy: normalizeTaskProxy(media?.proxy),
+      title: normalizedTitle,
       outputPath: safeOutputPath,
       filePath,
       fileName,
       status: "pending",
       progress: 0,
       createTime: new Date(),
-      referer,
+      referer: normalizedReferer,
       retryCount: 0,
       maxRetries: getConfig().download.retryAttempts,
     };
 
     this.downloadTasks.set(taskId, task);
-    this.downloadQueue.push(taskId);
 
     logInfo(`创建下载任务: ${taskId}, 标题: ${title}, 路径: ${safeOutputPath}`);
-
-    // 尝试开始下载（如果有空位）
-    this.processQueue();
 
     return taskId;
   }
@@ -159,18 +330,40 @@ export class DownloadManager {
   /**
    * 清理路径，防止目录遍历攻击
    */
-  private sanitizePath(path: string): string {
+  private sanitizePath(path: unknown): string {
+    const defaultPath = this.safeOutputPathOrBuiltin(
+      getConfig().download.defaultOutputPath,
+    );
     if (!path || typeof path !== "string") {
-      return "./downloads";
+      return defaultPath;
     }
 
-    // 如果路径包含 .. 或以 http 开头，使用默认路径
-    if (path.includes("..") || path.startsWith("http")) {
+    const normalized = this.normalizeOutputPath(path);
+    if (!normalized) {
       logWarn(`检测到不安全路径: ${path}，使用默认路径`);
-      return "./downloads";
+      return defaultPath;
     }
 
-    return path.replace(/\/+$/, "") || "./downloads"; // 移除末尾斜杠
+    return normalized;
+  }
+
+  private safeOutputPathOrBuiltin(path: unknown): string {
+    return this.normalizeOutputPath(path) ?? BUILTIN_DEFAULT_OUTPUT_PATH;
+  }
+
+  private normalizeOutputPath(path: unknown): string | undefined {
+    if (typeof path !== "string") return undefined;
+    const normalized = path.trim().replace(/\/+$/, "");
+    if (!normalized) return undefined;
+    if (
+      normalized.includes("..") ||
+      /^https?:\/\//i.test(normalized) ||
+      /^[a-z][a-z0-9+.-]*:/i.test(normalized) ||
+      normalized.includes("\\")
+    ) {
+      return undefined;
+    }
+    return normalized;
   }
 
   // ==================== 下载控制 ====================
@@ -218,22 +411,13 @@ export class DownloadManager {
       return false;
     }
 
-    // 检查磁盘空间
-    const hasSpace = await this.checkDiskSpace(task.outputPath);
-    if (!hasSpace) {
-      task.status = "error";
-      const minDisk = getConfig().download.minDiskFreeMB;
-      task.error = `磁盘空间不足，需要至少 ${minDisk}MB 可用空间`;
-      logError(task.error);
-      return false;
-    }
-
     // 创建 AbortController
     const controller = new AbortController();
     this.activeDownloads.set(taskId, controller);
 
     task.status = "downloading";
     task.startTime = new Date();
+    task.endTime = undefined;
     task.error = undefined;
 
     logInfo(`开始下载任务: ${taskId}, 标题: ${task.title}`);
@@ -242,12 +426,25 @@ export class DownloadManager {
       // 确保输出目录存在
       await this.ensureDirectoryExists(task.outputPath);
 
+      // 检查磁盘空间
+      const hasSpace = await this.checkDiskSpace(task.outputPath);
+      if (!hasSpace) {
+        task.status = "error";
+        const minDisk = getConfig().download.minDiskFreeMB;
+        task.error = `磁盘空间不足，需要至少 ${minDisk}MB 可用空间`;
+        task.endTime = new Date();
+        this.stats.failedDownloads++;
+        logError(task.error);
+        return false;
+      }
+
       // 执行下载（带超时）
       const success = await withTimeout(
-        this.downloadM3U8Video(task, controller.signal),
+        this.downloadVideoWithFFmpeg(task, controller.signal),
         getConfig().download.timeoutMs,
         `下载任务 ${taskId}`,
         controller.signal,
+        () => controller.abort(),
       );
 
       if (success) {
@@ -266,6 +463,7 @@ export class DownloadManager {
 
       // 检查是否已取消（使用类型断言绕过TypeScript检查）
       if ((task.status as string) === "cancelled") {
+        task.endTime = new Date();
         logInfo(`下载任务已取消: ${taskId}`);
         return false;
       }
@@ -289,6 +487,7 @@ export class DownloadManager {
       // 最终失败
       task.status = "error";
       task.error = errorMsg;
+      task.endTime = new Date();
       this.stats.failedDownloads++;
       logError(`下载最终失败: ${task.title}`, error);
       return false;
@@ -303,110 +502,147 @@ export class DownloadManager {
    * 公共API：开始下载（添加到队列）
    */
   startDownload(taskId: string): boolean {
-    const task = this.downloadTasks.get(taskId);
+    const normalizedTaskId = normalizeTaskId(taskId);
+    if (!normalizedTaskId) {
+      logError(`开始下载失败: 任务ID无效 ${String(taskId)}`);
+      return false;
+    }
+
+    const task = this.downloadTasks.get(normalizedTaskId);
     if (!task) {
-      logError(`开始下载失败: 任务不存在 ${taskId}`);
+      logError(`开始下载失败: 任务不存在 ${normalizedTaskId}`);
       return false;
     }
 
     if (task.status === "downloading") {
-      logWarn(`任务已在下载中: ${taskId}`);
+      logWarn(`任务已在下载中: ${normalizedTaskId}`);
       return true;
     }
 
     if (task.status === "completed") {
-      logWarn(`任务已下载完成: ${taskId}`);
+      logWarn(`任务已下载完成: ${normalizedTaskId}`);
       return true;
     }
 
     // 重置状态并加入队列
+    if (task.status === "error" || task.status === "cancelled") {
+      task.progress = 0;
+      task.error = undefined;
+      task.endTime = undefined;
+    }
     task.status = "pending";
     task.retryCount = 0;
 
-    if (!this.downloadQueue.includes(taskId)) {
-      this.downloadQueue.push(taskId);
+    if (!this.downloadQueue.includes(normalizedTaskId)) {
+      this.downloadQueue.push(normalizedTaskId);
     }
 
-    this.processQueue();
+    if (this.autoProcess) {
+      this.processQueue();
+    }
     return true;
   }
 
   /**
-   * 下载M3U8视频（使用FFmpeg）
+   * 下载视频（使用FFmpeg）
    */
-  private async downloadM3U8Video(
+  private async downloadVideoWithFFmpeg(
     task: IDownloadTask,
     signal: AbortSignal,
   ): Promise<boolean> {
     let logPath: string | undefined;
+    let command: Deno.ChildProcess | undefined;
+    let abortHandler: (() => void) | undefined;
+    let cleanupOutput = false;
+    let completedSuccessfully = false;
     try {
       // 检查文件是否已存在
       try {
         await Deno.stat(task.filePath);
         // 文件存在，添加序号
-        const ext = task.fileName.slice(-4);
-        const base = task.fileName.slice(0, -4);
+        const { base, extension } = splitDownloadFileName(task.fileName);
         let counter = 1;
         let newPath = task.filePath;
 
         while (true) {
-          newPath = `${task.outputPath}/${base}_${counter}${ext}`;
+          newPath = `${task.outputPath}/${base}_${counter}${extension}`;
           try {
             await Deno.stat(newPath);
             counter++;
-          } catch {
-            break;
+          } catch (error) {
+            if (error instanceof Deno.errors.NotFound) {
+              break;
+            }
+            throw error;
           }
         }
 
         task.filePath = newPath;
-        task.fileName = `${base}_${counter}${ext}`;
+        task.fileName = `${base}_${counter}${extension}`;
         logInfo(`文件已存在，重命名为: ${task.fileName}`);
-      } catch {
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          throw error;
+        }
         // 文件不存在，继续
       }
 
       // 构建代理URL
-      const proxyUrl = new URL(`${this.serverAddr}/api/proxy/playlist.m3u8`);
+      const proxyName = task.format === "m3u8" ? "playlist.m3u8" : "video.mp4";
+      const proxyUrl = new URL(`${this.serverAddr}/api/proxy/${proxyName}`);
       proxyUrl.searchParams.set("taskId", task.id);
       proxyUrl.searchParams.set("url", task.url);
       proxyUrl.searchParams.set(
         "referer",
         task.referer ?? new URL(task.url).origin,
       );
+      if (task.format === "m3u8") {
+        proxyUrl.searchParams.set("type", "m3u8");
+      } else if (task.format === "h5") {
+        proxyUrl.searchParams.set("type", "h5");
+      }
+      if (task.proxy === URLProxy.REMOTE) {
+        proxyUrl.searchParams.set("proxy", "remote");
+      }
 
       logDebug(`FFmpeg 输入: ${proxyUrl.toString()}`);
       logDebug(`FFmpeg 输出: ${task.filePath}`);
 
+      const ffmpegArgs = [
+        "-hide_banner",
+        "-stats",
+        "-i",
+        proxyUrl.toString(),
+        "-c",
+        "copy",
+      ];
+      if (task.format === "m3u8") {
+        ffmpegArgs.push("-bsf:a", "aac_adtstoasc");
+      }
+      ffmpegArgs.push(
+        "-movflags",
+        "+faststart",
+        "-y",
+        task.filePath,
+      );
+
       // 启动 FFmpeg
-      const command = new Deno.Command("ffmpeg", {
-        args: [
-          "-hide_banner", // 隐藏版本信息
-          "-stats", // 显示进度统计
-          "-i",
-          proxyUrl.toString(),
-          "-c",
-          "copy", // 直接复制，不重新编码
-          "-bsf:a",
-          "aac_adtstoasc", // 修复 AAC 音频
-          "-movflags",
-          "+faststart", // 优化网络播放
-          "-y", // 覆盖已存在文件
-          task.filePath,
-        ],
+      command = new Deno.Command("ffmpeg", {
+        args: ffmpegArgs,
         stdin: "null",
         stdout: "piped",
         stderr: "piped",
       }).spawn();
+      cleanupOutput = true;
 
       // 监听取消信号
-      const abortHandler = () => {
+      abortHandler = () => {
         try {
-          command.kill("SIGTERM");
+          command?.kill("SIGTERM");
           // 给2秒优雅关闭时间，然后强制结束
           setTimeout(() => {
             try {
-              command.kill("SIGKILL");
+              command?.kill("SIGKILL");
             } catch {
               // 可能已退出
             }
@@ -418,6 +654,7 @@ export class DownloadManager {
       signal.addEventListener("abort", abortHandler, { once: true });
 
       // 等待 FFmpeg 完成
+      await this.ensureDirectoryExists(getConfig().server.dataDir);
       logPath = join(
         getConfig().server.dataDir,
         basename(task.filePath) + ".log",
@@ -438,6 +675,7 @@ export class DownloadManager {
       if (!status.success) {
         throw new Error(`FFmpeg 退出码 ${status.code}，详细日志见 ${logPath}`);
       }
+      completedSuccessfully = true;
 
       // 获取文件大小
       try {
@@ -452,15 +690,31 @@ export class DownloadManager {
 
       return true;
     } catch (error) {
-      // 清理不完整文件
       try {
-        await Deno.remove(task.filePath);
+        command?.kill("SIGTERM");
       } catch {
-        // 忽略清理错误
+        // 进程可能已退出
+      }
+      if (cleanupOutput) {
+        // 清理不完整文件
+        try {
+          await Deno.remove(task.filePath);
+        } catch {
+          // 忽略清理错误
+        }
       }
       throw error;
     } finally {
-      if (logPath) await Deno.remove(logPath);
+      if (abortHandler) {
+        signal.removeEventListener("abort", abortHandler);
+      }
+      if (logPath && completedSuccessfully) {
+        try {
+          await Deno.remove(logPath);
+        } catch {
+          // 日志清理失败不应改变下载结果
+        }
+      }
     }
   }
 
@@ -502,20 +756,34 @@ export class DownloadManager {
    * 取消下载
    */
   cancelDownload(taskId: string): boolean {
-    const task = this.downloadTasks.get(taskId);
+    const normalizedTaskId = normalizeTaskId(taskId);
+    if (!normalizedTaskId) {
+      return false;
+    }
+
+    const task = this.downloadTasks.get(normalizedTaskId);
     if (!task) {
       return false;
     }
 
+    if (task.status === "cancelled") {
+      return true;
+    }
+
+    if (task.status !== "pending" && task.status !== "downloading") {
+      logWarn(`任务当前状态不可取消: ${taskId}, status=${task.status}`);
+      return false;
+    }
+
     // 如果正在下载，触发 AbortController
-    const controller = this.activeDownloads.get(taskId);
+    const controller = this.activeDownloads.get(normalizedTaskId);
     if (controller) {
       controller.abort();
-      this.activeDownloads.delete(taskId);
+      this.activeDownloads.delete(normalizedTaskId);
     }
 
     // 从队列中移除
-    const queueIndex = this.downloadQueue.indexOf(taskId);
+    const queueIndex = this.downloadQueue.indexOf(normalizedTaskId);
     if (queueIndex > -1) {
       this.downloadQueue.splice(queueIndex, 1);
     }
@@ -523,12 +791,13 @@ export class DownloadManager {
     // 更新任务状态
     task.status = "cancelled";
     task.error = "下载已取消";
+    task.endTime = new Date();
     this.stats.cancelledDownloads++;
 
     // 清理临时文件
-    this.cleanupTempFiles(taskId);
+    this.cleanupTempFiles(normalizedTaskId);
 
-    logInfo(`下载任务已取消: ${taskId}`);
+    logInfo(`下载任务已取消: ${normalizedTaskId}`);
     return true;
   }
 
@@ -536,9 +805,22 @@ export class DownloadManager {
    * 重试下载
    */
   retryDownload(taskId: string): boolean {
-    const task = this.downloadTasks.get(taskId);
+    const normalizedTaskId = normalizeTaskId(taskId);
+    if (!normalizedTaskId) {
+      logError(`重试失败: 任务ID无效 ${String(taskId)}`);
+      return false;
+    }
+
+    const task = this.downloadTasks.get(normalizedTaskId);
     if (!task) {
-      logError(`重试失败: 任务不存在 ${taskId}`);
+      logError(`重试失败: 任务不存在 ${normalizedTaskId}`);
+      return false;
+    }
+
+    if (task.status === "downloading" || task.status === "completed") {
+      logWarn(
+        `任务当前状态不可重试: ${normalizedTaskId}, status=${task.status}`,
+      );
       return false;
     }
 
@@ -550,26 +832,31 @@ export class DownloadManager {
     task.startTime = undefined;
     task.endTime = undefined;
 
-    logInfo(`重试下载任务: ${taskId}`);
-    return this.startDownload(taskId);
+    logInfo(`重试下载任务: ${normalizedTaskId}`);
+    return this.startDownload(normalizedTaskId);
   }
 
   /**
    * 删除下载任务
    */
   deleteDownload(taskId: string, deleteFile: boolean = false): boolean {
-    const task = this.downloadTasks.get(taskId);
+    const normalizedTaskId = normalizeTaskId(taskId);
+    if (!normalizedTaskId) {
+      return false;
+    }
+
+    const task = this.downloadTasks.get(normalizedTaskId);
     if (!task) {
       return false;
     }
 
     // 如果正在下载，先取消
     if (task.status === "downloading") {
-      this.cancelDownload(taskId);
+      this.cancelDownload(normalizedTaskId);
     }
 
     // 从队列中移除
-    const queueIndex = this.downloadQueue.indexOf(taskId);
+    const queueIndex = this.downloadQueue.indexOf(normalizedTaskId);
     if (queueIndex > -1) {
       this.downloadQueue.splice(queueIndex, 1);
     }
@@ -577,16 +864,18 @@ export class DownloadManager {
     // 删除文件
     if (deleteFile && task.filePath) {
       try {
-        Deno.removeSync(task.filePath);
-        logInfo(`删除文件: ${task.filePath}`);
+        const deleted = removeTaskFileSync(task);
+        if (deleted) {
+          logInfo(`删除文件: ${task.filePath}`);
+        }
       } catch (error) {
         logWarn(`删除文件失败: ${task.filePath}`, error);
       }
     }
 
     // 删除任务
-    this.downloadTasks.delete(taskId);
-    logInfo(`删除下载任务: ${taskId}`);
+    this.downloadTasks.delete(normalizedTaskId);
+    logInfo(`删除下载任务: ${normalizedTaskId}`);
     return true;
   }
 
@@ -608,8 +897,9 @@ export class DownloadManager {
 
         if (deleteFiles && task.filePath) {
           try {
-            Deno.removeSync(task.filePath);
-            deletedFiles++;
+            if (removeTaskFileSync(task)) {
+              deletedFiles++;
+            }
           } catch {
             // 忽略删除错误
           }
@@ -696,7 +986,10 @@ export class DownloadManager {
   // ==================== 查询接口 ====================
 
   getDownloadTask(taskId: string): IDownloadTask | undefined {
-    return this.downloadTasks.get(taskId);
+    const normalizedTaskId = normalizeTaskId(taskId);
+    return normalizedTaskId
+      ? this.downloadTasks.get(normalizedTaskId)
+      : undefined;
   }
 
   getAllDownloadTasks(): IDownloadTask[] {
@@ -718,24 +1011,33 @@ export class DownloadManager {
   }
 
   getQueuePosition(taskId: string): number {
-    return this.downloadQueue.indexOf(taskId) + 1;
+    const normalizedTaskId = normalizeTaskId(taskId);
+    return normalizedTaskId
+      ? this.downloadQueue.indexOf(normalizedTaskId) + 1
+      : 0;
   }
 
   // ==================== 进度标记（供代理使用） ====================
 
   markStart(taskId: string, allSegments: number): void {
-    const task = this.downloadTasks.get(taskId);
-    if (task) {
-      task.totalSegments = allSegments;
+    const normalizedTaskId = normalizeTaskId(taskId);
+    const task = normalizedTaskId
+      ? this.downloadTasks.get(normalizedTaskId)
+      : undefined;
+    if (task && Number.isFinite(allSegments) && allSegments > 0) {
+      task.totalSegments = Math.floor(allSegments);
       if (task.status === "pending") {
         task.status = "downloading";
       }
-      logDebug(`任务 ${taskId} 开始下载，共 ${allSegments} 个片段`);
+      logDebug(`任务 ${normalizedTaskId} 开始下载，共 ${allSegments} 个片段`);
     }
   }
 
   markStep(taskId: string): IDownloadTask | undefined {
-    const task = this.downloadTasks.get(taskId);
+    const normalizedTaskId = normalizeTaskId(taskId);
+    const task = normalizedTaskId
+      ? this.downloadTasks.get(normalizedTaskId)
+      : undefined;
     if (task && task.totalSegments && task.totalSegments > 0) {
       const segPercent = 100 / task.totalSegments;
       task.progress = Math.min(99, task.progress + segPercent);
@@ -744,8 +1046,12 @@ export class DownloadManager {
   }
 
   setProgress(taskId: string, progress: number): IDownloadTask | undefined {
-    const task = this.downloadTasks.get(taskId);
+    const normalizedTaskId = normalizeTaskId(taskId);
+    const task = normalizedTaskId
+      ? this.downloadTasks.get(normalizedTaskId)
+      : undefined;
     if (task) {
+      if (!Number.isFinite(progress)) return task;
       const percent = progress <= 1 ? progress * 100 : progress;
       task.progress = Math.max(0, Math.min(99, percent));
     }
@@ -764,6 +1070,9 @@ export class DownloadManager {
       id: task.id,
       url: task.url,
       referer: task.referer,
+      format: task.format,
+      proxy: task.proxy,
+      queued: this.downloadQueue.includes(task.id),
       title: task.title,
       outputPath: task.outputPath,
       filePath: task.filePath,
@@ -783,53 +1092,109 @@ export class DownloadManager {
   /**
    * 从持久化格式导入任务
    */
-  importTasks(tasks: IDownloadTaskPersisted[]): void {
+  importTasks(tasks: unknown): void {
+    if (!Array.isArray(tasks)) {
+      logWarn("跳过无效持久化下载任务列表");
+      return;
+    }
+
+    let imported = 0;
     for (const persisted of tasks) {
-      // 只恢复未完成的任务
+      const taskLike = persisted && typeof persisted === "object"
+        ? persisted as Partial<IDownloadTaskPersisted>
+        : null;
+      const rawUrl = taskLike?.url;
       if (
-        persisted.status === "completed" || persisted.status === "cancelled"
+        !taskLike ||
+        !validateRequiredTaskId(taskLike.id) ||
+        typeof rawUrl !== "string" ||
+        !validateUrl(rawUrl)
       ) {
+        logWarn(`跳过无效持久化下载任务: ${taskLike?.id ?? "unknown"}`);
         continue;
       }
+      const taskId = taskLike.id.trim();
+      if (this.downloadTasks.has(taskId)) {
+        logWarn(`跳过重复持久化下载任务: ${taskId}`);
+        continue;
+      }
+      const normalizedUrl = new URL(rawUrl.trim()).href;
+      if (!isPlayableMediaUrl(normalizedUrl, taskLike.format)) {
+        logWarn(`跳过非直连媒体下载任务: ${taskId}`);
+        continue;
+      }
+      const persistedStatus = DOWNLOAD_STATUSES.has(
+          taskLike.status as IDownloadTask["status"],
+        )
+        ? taskLike.status as IDownloadTask["status"]
+        : "error";
+      const maxRetries = normalizePositiveInteger(
+        taskLike.maxRetries,
+        getConfig().download.retryAttempts,
+      );
+      const title = nonEmptyStringOr(taskLike.title, "未命名下载");
+      const outputPath = this.sanitizePath(taskLike.outputPath);
+      const fileName = nonEmptyStringOr(
+        taskLike.fileName,
+        `${this.sanitizeFileName(title)}.mp4`,
+      );
+      const safeFileName = this.sanitizeFileName(fileName);
 
       const task: IDownloadTask = {
-        ...persisted,
-        createTime: new Date(persisted.createTime),
-        startTime: persisted.startTime
-          ? new Date(persisted.startTime)
-          : undefined,
-        endTime: persisted.endTime ? new Date(persisted.endTime) : undefined,
-        status: persisted.status === "downloading" ? "error" : persisted.status, // 重置进行中的任务
-        error: persisted.status === "downloading"
+        ...taskLike,
+        id: taskId,
+        url: normalizedUrl,
+        referer: normalizeOptionalHttpUrl(taskLike.referer),
+        format: normalizePersistedFormat(taskLike.format, normalizedUrl),
+        proxy: normalizePersistedProxy(taskLike.proxy),
+        title,
+        outputPath,
+        fileName: safeFileName,
+        filePath: `${outputPath}/${safeFileName}`,
+        createTime: validDateOrNow(taskLike.createTime),
+        startTime: optionalValidDate(taskLike.startTime),
+        endTime: optionalValidDate(taskLike.endTime),
+        status: persistedStatus === "downloading" ? "error" : persistedStatus, // 重置进行中的任务
+        error: persistedStatus === "downloading"
           ? "程序重启，任务中断"
-          : persisted.error,
-        progress: persisted.status === "downloading" ? 0 : persisted.progress,
+          : normalizeOptionalString(taskLike.error),
+        progress: persistedStatus === "downloading"
+          ? 0
+          : normalizeProgress(taskLike.progress),
+        totalSegments: normalizePositiveInteger(taskLike.totalSegments),
+        retryCount: normalizeNonNegativeInteger(taskLike.retryCount),
+        maxRetries,
       };
 
       this.downloadTasks.set(task.id, task);
+      imported++;
 
-      // 将待处理任务加入队列
-      if (task.status === "pending") {
+      // 只恢复已经排队的等待任务；单纯创建但未启动的 pending 不应重启后自动下载。
+      if (task.status === "pending" && taskLike.queued === true) {
         this.downloadQueue.push(task.id);
       }
     }
 
-    logInfo(`导入 ${tasks.length} 个下载任务`);
-    this.processQueue();
+    logInfo(`导入 ${imported}/${tasks.length} 个下载任务`);
+    if (this.autoProcess) {
+      this.processQueue();
+    }
   }
 
   /**
    * 保存任务到 Deno KV
    */
   async saveToKV(): Promise<void> {
+    let kv: Deno.Kv | undefined;
     try {
-      const kv = await Deno.openKv();
+      kv = await Deno.openKv();
       const tasks = this.exportTasks();
       await kv.set([this.kvKey], tasks);
-      kv.close();
       logDebug(`保存 ${tasks.length} 个下载任务到 KV`);
     } catch (error) {
       logError("保存下载任务到 KV 失败:", error);
+    } finally {
+      kv?.close();
     }
   }
 
@@ -837,17 +1202,21 @@ export class DownloadManager {
    * 从 Deno KV 加载任务
    */
   async loadFromKV(): Promise<void> {
+    let kv: Deno.Kv | undefined;
     try {
-      const kv = await Deno.openKv();
+      kv = await Deno.openKv();
       const result = await kv.get<IDownloadTaskPersisted[]>([this.kvKey]);
-      kv.close();
 
-      if (result.value) {
+      if (Array.isArray(result.value)) {
         this.importTasks(result.value);
         logInfo(`从 KV 加载 ${result.value.length} 个下载任务`);
+      } else if (result.value !== null) {
+        logWarn("KV 中的下载任务数据不是数组，已跳过");
       }
     } catch (error) {
       logError("从 KV 加载下载任务失败:", error);
+    } finally {
+      kv?.close();
     }
   }
 
