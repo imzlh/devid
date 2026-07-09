@@ -119,11 +119,3 @@ export function inferMediaFormat(url: string, typeHint?: unknown): MediaFormat {
   if (typeHint === "h5" || mediaTypeSuggestsH5(typeHint)) return "h5";
   return "h5";
 }
-
-export function isPlayableMediaUrl(url: string, typeHint?: unknown): boolean {
-  return looksLikeH5Url(url) ||
-    looksLikeM3u8Url(url) ||
-    mediaTypeSuggestsDirectH5(typeHint) ||
-    typeHint === "m3u8" ||
-    mediaTypeSuggestsM3u8(typeHint);
-}

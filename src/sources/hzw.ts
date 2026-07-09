@@ -570,19 +570,21 @@ export default class HZWSource extends BaseVideoSource {
   override async getSeries(
     seriesId: string,
     _url?: string,
+    page = 1,
   ): Promise<ISeriesResult | null> {
     assert(seriesId == "short-video", "非短视频不支持序列");
-    // hzw源的短视频系列不需要URL参数，忽略传入的url
+    // hzw 源的短视频 feed 不需要 URL 参数，按 pageIndex 持续加载。
     assert(this.user, "用户信息未初始化");
+    const pageIndex = Number.isSafeInteger(page) && page > 0 ? page : 1;
 
     const res = await this.req<IShortVideoInfo[]>(
       "/ui/api/shortVideo/byRecommend",
       {
-        "pageIndex": 1,
+        "pageIndex": pageIndex,
         "pageSize": 10,
         "userId": this.user.id,
         "authorId": "",
-        "first": true,
+        "first": pageIndex === 1,
       },
       2,
     );
@@ -592,7 +594,7 @@ export default class HZWSource extends BaseVideoSource {
       const url = hzwHttpUrlOrEmpty(e.url, mediaBase);
       if (!url) return null;
       return {
-        episodeNumber: i + 1,
+        episodeNumber: (pageIndex - 1) * 10 + i + 1,
         id: e.id.toString(),
         thumbnail: hzwHttpUrlOrEmpty(e.verticalCover, mediaBase) || undefined,
         url,

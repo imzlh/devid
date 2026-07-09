@@ -189,6 +189,7 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
     try {
       const seriesId = c.req.param("id");
       const source = optionalTrimmedString(c.req.query("source"));
+      const page = Number(c.req.query("page") ?? 1);
       if (!validateRequiredString(seriesId, "seriesId")) {
         return c.json({ error: "缺少系列ID" }, 400);
       }
@@ -198,6 +199,7 @@ export function registerApiRoutes(app: Hono, ctx: ServerContext): void {
       const result = await videoSourceManager.getSeriesVideos(
         normalizedSeriesId,
         source,
+        Number.isSafeInteger(page) && page > 0 ? page : 1,
       );
       if (!result) {
         return c.json({ error: "系列不存在" }, 404);

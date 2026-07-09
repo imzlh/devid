@@ -519,7 +519,7 @@ export default class AGEFans extends BaseVideoSource {
         quality: "1080p",
         url: mediaUrl,
         format: this.inferFormat(mediaUrl, res.type),
-        proxy: URLProxy.LOCAL,
+        proxy: URLProxy.NONE,
       },
     ];
   }

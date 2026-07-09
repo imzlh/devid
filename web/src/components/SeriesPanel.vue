@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Download, Play, X } from "@lucide/vue";
-import { getSeriesDetail, getSeriesVideos } from "../api/client";
+import { getSeriesDetail } from "../api/client";
 import type { Episode, SeriesDetail, VideoItem } from "../types/api";
 
 const props = defineProps<{
@@ -40,19 +40,6 @@ function episodeSelectionLabel(episode: Episode): string {
   return `选择 ${title}`;
 }
 
-function detailFromInfinite(series: VideoItem, episodes: Episode[]): SeriesDetail {
-  return {
-    id: series.id,
-    seriesId: series.id,
-    title: series.title,
-    thumbnail: series.thumbnail,
-    totalEpisodes: episodes.length,
-    source: series.source,
-    url: series.url,
-    episodes,
-  };
-}
-
 async function loadSeries(series: VideoItem | null) {
   const requestId = ++detailRequestId;
   detail.value = null;
@@ -62,16 +49,11 @@ async function loadSeries(series: VideoItem | null) {
 
   loading.value = true;
   try {
-    const nextDetail = series.contentType === "infinite"
-      ? detailFromInfinite(
-        series,
-        (await getSeriesVideos(series.id, series.source)).episodes,
-      )
-      : await getSeriesDetail(
-        series.id,
-        series.url,
-        series.source,
-      );
+    const nextDetail = await getSeriesDetail(
+      series.id,
+      series.url,
+      series.source,
+    );
     if (requestId !== detailRequestId) return;
     detail.value = nextDetail;
   } catch (err) {

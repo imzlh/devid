@@ -1,15 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { nextTick, onBeforeUnmount, onMounted, ref, toRef, watch } from "vue";
 import { Check, Copy, Download, LoaderCircle, X } from "@lucide/vue";
-import { createDownload, parseVideo, startDownload } from "../api/client";
-import {
-  bestQuality,
-  httpUrlOrEmpty,
-  normalizePlaybackUrls,
-  playbackUrl,
-} from "../utils/media";
-import { getProgress, saveProgress } from "../utils/progress";
-import type { VideoItem, VideoUrl } from "../types/api";
+import { useVideoPlayback } from "../composables/useVideoPlayback";
+import type { VideoItem } from "../types/api";
 import ArtVideoPlayer from "./ArtVideoPlayer.vue";
 
 const props = defineProps<{
@@ -21,64 +14,31 @@ const emit = defineEmits<{
   downloaded: [];
 }>();
 
-const loading = ref(false);
-const slowLoading = ref(false);
-const downloading = ref(false);
-const copied = ref(false);
-const error = ref("");
-const qualities = ref<VideoUrl[]>([]);
-const selected = ref<VideoUrl | null>(null);
 const panel = ref<HTMLElement | null>(null);
-let parseRequestId = 0;
-let lastProgressSave = 0;
-let slowLoadingTimer: ReturnType<typeof window.setTimeout> | null = null;
-let copyResetTimer: ReturnType<typeof window.setTimeout> | null = null;
-
-const src = computed(() =>
-  selected.value && props.video ? playbackUrl(selected.value, props.video.url) : ""
-);
-const poster = computed(() => httpUrlOrEmpty(props.video?.thumbnail));
-const resumeTime = computed(() => props.video ? getProgress(props.video) : 0);
-const canPlay = computed(() => Boolean(selected.value && src.value));
-
-async function loadVideo(video: VideoItem | null) {
-  const requestId = ++parseRequestId;
-  if (slowLoadingTimer) window.clearTimeout(slowLoadingTimer);
-  qualities.value = [];
-  selected.value = null;
-  error.value = "";
-  copied.value = false;
-  slowLoading.value = false;
-  lastProgressSave = 0;
-  if (!video) return;
-
-  loading.value = true;
-  slowLoadingTimer = window.setTimeout(() => {
-    if (requestId === parseRequestId && loading.value) slowLoading.value = true;
-  }, 15000);
-  try {
-    const results = normalizePlaybackUrls(await parseVideo(video.url, video.source));
-    if (requestId !== parseRequestId) return;
-    qualities.value = results;
-    selected.value = bestQuality(results);
-    if (!results.length) {
-      error.value = "没有可播放地址";
-    }
-  } catch (err) {
-    if (requestId !== parseRequestId) return;
-    error.value = err instanceof Error ? err.message : String(err);
-  } finally {
-    if (requestId === parseRequestId) {
-      loading.value = false;
-      if (slowLoadingTimer) window.clearTimeout(slowLoadingTimer);
-      slowLoadingTimer = null;
-    }
-  }
-}
-
-function retryLoadVideo() {
-  if (props.video) void loadVideo(props.video);
-}
+const playback = useVideoPlayback(toRef(props, "video"), {
+  onDownloaded: () => emit("downloaded"),
+});
+const {
+  loading,
+  slowLoading,
+  downloading,
+  copied,
+  error,
+  qualities,
+  selected,
+  src,
+  poster,
+  resumeTime,
+  canPlay,
+  loadVideo,
+  retry,
+  downloadSelected,
+  copySelectedLink,
+  handleProgress,
+  setError,
+  clearError,
+  cleanup,
+} = playback;
 
 watch(
   () => props.video,
@@ -92,7 +52,7 @@ watch(
 watch(
   () => selected.value?.url,
   () => {
-    error.value = "";
+    clearError();
   },
 );
 
@@ -101,60 +61,8 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  parseRequestId++;
-  if (slowLoadingTimer) window.clearTimeout(slowLoadingTimer);
-  if (copyResetTimer) window.clearTimeout(copyResetTimer);
+  cleanup();
 });
-
-async function downloadSelected() {
-  if (!props.video || !selected.value) return;
-  downloading.value = true;
-  error.value = "";
-  try {
-    const task = await createDownload(
-      props.video.title,
-      selected.value.url,
-      selected.value.referrer ?? props.video.url,
-      selected.value,
-    );
-    const started = await startDownload(task.id);
-    if (!started.success) throw new Error("下载任务启动失败");
-    emit("downloaded");
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err);
-  } finally {
-    downloading.value = false;
-  }
-}
-
-async function copySelectedLink() {
-  if (!src.value) return;
-  error.value = "";
-  copied.value = false;
-  if (copyResetTimer) window.clearTimeout(copyResetTimer);
-  try {
-    const link = new URL(src.value, window.location.origin).href;
-    await navigator.clipboard.writeText(link);
-    copied.value = true;
-    copyResetTimer = window.setTimeout(() => {
-      copied.value = false;
-      copyResetTimer = null;
-    }, 1400);
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : "复制失败";
-  }
-}
-
-function handleProgress(time: number, duration: number) {
-  if (!props.video) return;
-  if (!Number.isFinite(time) || !Number.isFinite(duration) || duration <= 0) {
-    return;
-  }
-  const now = Date.now();
-  if (now - lastProgressSave < 4000 && time < duration - 20) return;
-  lastProgressSave = now;
-  saveProgress(props.video, time, duration);
-}
 </script>
 
 <template>
@@ -189,7 +97,7 @@ function handleProgress(time: number, duration: number) {
           :format="selected?.format"
           :poster="poster"
           :start-time="resumeTime"
-          @error="error = $event"
+          @error="setError"
           @progress="handleProgress"
         />
         <div v-else class="player-loading" role="status">
@@ -216,7 +124,7 @@ function handleProgress(time: number, duration: number) {
 
       <div v-if="error" class="player-error state-error">
         <span role="alert">{{ error }}</span>
-        <button type="button" @click="retryLoadVideo">重试</button>
+        <button type="button" @click="retry">重试</button>
       </div>
     </section>
 

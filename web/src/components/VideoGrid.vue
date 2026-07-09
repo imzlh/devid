@@ -29,7 +29,7 @@ const emit = defineEmits<{
 
 function secondaryActionLabel(item: VideoItem): string {
   if (item.contentType === "series") return "选集下载";
-  if (item.contentType === "infinite") return "连载下载";
+  if (item.contentType === "infinite") return "打开短视频";
   return "下载";
 }
 

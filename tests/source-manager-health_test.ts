@@ -2,7 +2,11 @@ import { assertEquals } from "@std/assert";
 import { VideoSourceManager } from "../src/manager.ts";
 import { buildActiveSourceResponse } from "../src/server/source-response.ts";
 import { BaseVideoSource } from "../src/sources/index.ts";
-import type { IVideoList, IVideoURL } from "../src/types/index.ts";
+import type {
+  ISeriesResult,
+  IVideoList,
+  IVideoURL,
+} from "../src/types/index.ts";
 
 class ToggleSource extends BaseVideoSource {
   failInit = false;
@@ -26,6 +30,34 @@ class ToggleSource extends BaseVideoSource {
 
   parseVideoUrl(): Promise<IVideoURL[]> {
     return Promise.resolve([]);
+  }
+}
+
+class InfiniteFeedSource extends ToggleSource {
+  requestedPages: number[] = [];
+
+  override getSeries(
+    seriesId: string,
+    _url?: string,
+    page = 1,
+  ): Promise<ISeriesResult> {
+    this.requestedPages.push(page);
+    return Promise.resolve({
+      id: seriesId,
+      seriesId,
+      title: "Short feed",
+      thumbnail: "",
+      totalEpisodes: 1,
+      source: this.getId(),
+      url: `${this.base}/feed`,
+      episodes: [{
+        id: `${page}`,
+        seriesId,
+        title: `Clip ${page}`,
+        episodeNumber: page,
+        url: `${this.base}/video-${page}.mp4`,
+      }],
+    });
   }
 }
 
@@ -112,4 +144,26 @@ Deno.test("VideoSourceManager trims source ids before reinit and health lookup",
     manager.getSourceHealth(` ${source.getId()} `)?.status,
     "healthy",
   );
+});
+
+Deno.test("VideoSourceManager forwards short feed page to source getSeries", async () => {
+  const manager = new VideoSourceManager();
+  const source = new InfiniteFeedSource("test-infinite-feed");
+  manager.registerSource(source);
+
+  assertEquals(await manager.initSource(source.getId()), true);
+  const pageTwo = await manager.getSeriesVideos(
+    "short-video",
+    source.getId(),
+    2,
+  );
+  const pageThree = await manager.getSeriesVideos(
+    "short-video",
+    source.getId(),
+    3,
+  );
+
+  assertEquals(source.requestedPages, [2, 3]);
+  assertEquals(pageTwo?.episodes[0]?.episodeNumber, 2);
+  assertEquals(pageThree?.episodes[0]?.episodeNumber, 3);
 });

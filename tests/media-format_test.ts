@@ -1,7 +1,6 @@
 import { assertEquals } from "@std/assert";
 import {
   inferMediaFormat,
-  isPlayableMediaUrl,
   looksLikeH5Url,
   looksLikeM3u8Url,
 } from "../src/utils/media-format.ts";
@@ -79,26 +78,6 @@ Deno.test("inferMediaFormat treats explicit H5 proxy type as H5 evidence", () =>
   assertEquals(inferMediaFormat(proxiedH5), "h5");
 });
 
-Deno.test("isPlayableMediaUrl rejects plain player pages mislabelled as H5", () => {
-  assertEquals(isPlayableMediaUrl("https://cdn.example.test/play?id=1"), false);
-  assertEquals(
-    isPlayableMediaUrl("https://cdn.example.test/play?id=1", "h5"),
-    false,
-  );
-  assertEquals(
-    isPlayableMediaUrl("https://cdn.example.test/watch", "video"),
-    false,
-  );
-  assertEquals(
-    isPlayableMediaUrl("https://cdn.example.test/watch", "video/mp4"),
-    true,
-  );
-  assertEquals(
-    isPlayableMediaUrl("https://cdn.example.test/video.mp4?token=abc", "h5"),
-    true,
-  );
-});
-
 Deno.test("media format inference tolerates malformed runtime type hints", () => {
   assertEquals(
     inferMediaFormat("https://cdn.example.test/video.mp4", 1),
@@ -109,9 +88,5 @@ Deno.test("media format inference tolerates malformed runtime type hints", () =>
       type: "h5",
     }),
     "m3u8",
-  );
-  assertEquals(
-    isPlayableMediaUrl("https://cdn.example.test/watch", { type: "hls" }),
-    false,
   );
 });

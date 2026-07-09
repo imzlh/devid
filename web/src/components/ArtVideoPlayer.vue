@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import Artplayer from "artplayer";
-import Hls from "hls.js";
+import Hls, { FetchLoader } from "hls.js";
 import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { inferMediaFormat } from "../utils/media";
 
@@ -19,6 +19,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   error: [message: string];
   progress: [time: number, duration: number];
+  ended: [];
 }>();
 
 const container = ref<HTMLDivElement | null>(null);
@@ -64,6 +65,9 @@ function attachHls(video: HTMLVideoElement, url: string, token: number) {
     hls = new Hls({
       enableWorker: true,
       lowLatencyMode: false,
+      loader: FetchLoader,
+      fetchSetup: (context, initParams) =>
+        new Request(context.url, { ...initParams, referrerPolicy: "no-referrer" }),
     });
     hls.on(Hls.Events.ERROR, (_event, data) => {
       if (token === mountToken && data.fatal) {
@@ -135,6 +139,9 @@ function mountPlayer() {
   });
   art.on("video:error", () => {
     if (token === mountToken) emit("error", useHls ? "HLS 播放失败" : "视频播放失败");
+  });
+  art.on("video:ended", () => {
+    if (token === mountToken) emit("ended");
   });
 }
 

@@ -524,13 +524,15 @@ export function getSeriesDetail(
 export function getSeriesVideos(
   seriesId: string,
   source?: string,
+  page = 1,
 ): Promise<{ episodes: Episode[] }> {
   const params = new URLSearchParams();
   if (source) params.set("source", source);
+  params.set("page", String(page));
   const suffix = params.size ? `?${params}` : "";
   return call(
     "series.getVideos",
-    [seriesId, source],
+    [seriesId, source, page],
     () =>
       request<{ episodes: Episode[] }>(
         `/api/series/${encodeURIComponent(seriesId)}/videos${suffix}`,

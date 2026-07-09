@@ -106,12 +106,14 @@ export function registerRpcHandlers(ctx: ServerContext): void {
   rpcServer.register("series.getVideos", async (...params: unknown[]) => {
     const seriesId = params[0] as string;
     const source = optionalTrimmedString(params[1]);
+    const page = Number(params[2] ?? 1);
     if (!validateRequiredString(seriesId, "seriesId")) {
       throw new Error("缺少或无效的系列ID");
     }
     const result = await videoSourceManager.getSeriesVideos(
       optionalTrimmedString(seriesId) || seriesId,
       source,
+      Number.isSafeInteger(page) && page > 0 ? page : 1,
     );
     if (!result) throw new Error("系列不存在");
     return result;

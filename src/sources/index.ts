@@ -104,7 +104,11 @@ export abstract class BaseVideoSource {
    * @param seriesId - 系列ID
    * @param url - 可选的系列页面URL，如果提供则优先使用
    */
-  getSeries(_seriesId: string, _url?: string): Promise<ISeriesResult | null> {
+  getSeries(
+    _seriesId: string,
+    _url?: string,
+    _page?: number,
+  ): Promise<ISeriesResult | null> {
     return Promise.reject(new Error("该视频源不支持系列列表功能"));
   }
 }

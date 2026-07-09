@@ -140,17 +140,6 @@ export function inferMediaFormat(
   return "h5";
 }
 
-export function isPlayableMediaUrl(
-  url: string,
-  typeHint?: unknown,
-): boolean {
-  return looksLikeH5Url(url) ||
-    looksLikeM3u8Url(url) ||
-    mediaTypeSuggestsDirectH5(typeHint) ||
-    typeHint === "m3u8" ||
-    mediaTypeSuggestsM3u8(typeHint);
-}
-
 function isM3u8Video(video: VideoUrl): boolean {
   return inferMediaFormat(video.url, video.format) === "m3u8";
 }
@@ -182,7 +171,6 @@ export function normalizePlaybackUrls(value: unknown): VideoUrl[] {
     const candidate = item as Partial<VideoUrl>;
     const url = httpUrlOrEmpty(candidate.url);
     if (!url || seen.has(url)) continue;
-    if (!isPlayableMediaUrl(url, candidate.format)) continue;
     seen.add(url);
     const format = inferMediaFormat(url, candidate.format);
     const quality = nonEmptyString(candidate.quality) ||
@@ -217,7 +205,6 @@ function proxyFileName(video: VideoUrl): string {
 export function playbackUrl(video: VideoUrl, referer?: string): string {
   const mediaUrl = httpUrlOrEmpty(video.url);
   if (!mediaUrl) return "";
-  if (!isPlayableMediaUrl(mediaUrl, video.format)) return "";
 
   const normalizedVideo = { ...video, url: mediaUrl };
   const useM3u8 = isM3u8Video(normalizedVideo);

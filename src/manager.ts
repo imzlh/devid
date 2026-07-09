@@ -13,7 +13,7 @@ import { logDebug, logError, logInfo, logWarn } from "./utils/logger.ts";
 import { getConfig } from "./config/index.ts";
 import { SOURCES } from "./sources.ts";
 import { APICache } from "./utils/cache.ts";
-import { inferMediaFormat, isPlayableMediaUrl } from "./utils/media-format.ts";
+import { inferMediaFormat } from "./utils/media-format.ts";
 
 // API 缓存实例（20秒过期）
 const apiCache = new APICache(20000);
@@ -70,10 +70,6 @@ export function normalizeVideoUrls(
       const url = normalizeHttpUrl(result.url.trim(), pageUrl);
       if (!url) {
         logWarn(`视频源 ${sourceId} 返回非HTTP播放地址: ${result.url}`);
-        continue;
-      }
-      if (!isPlayableMediaUrl(url, result.format)) {
-        logWarn(`视频源 ${sourceId} 返回非直连媒体播放地址: ${result.url}`);
         continue;
       }
       const format = inferMediaFormat(url, result.format);
@@ -573,12 +569,13 @@ export class VideoSourceManager {
     seriesId: string,
     url?: string,
     source?: string,
+    page?: number,
   ): Promise<ISeriesResult | null> {
     const target = this.resolveSourceWrapper(source);
     if (!target?.initialized) return null;
 
     try {
-      const list = await target.source.getSeries(seriesId, url);
+      const list = await target.source.getSeries(seriesId, url, page);
       return normalizeSeriesResult(
         list,
         seriesId,
@@ -597,12 +594,13 @@ export class VideoSourceManager {
   async getSeriesVideos(
     seriesId: string,
     source?: string,
+    page = 1,
   ): Promise<{ episodes: IEpisode[] } | null> {
     const target = this.resolveSourceWrapper(source);
     if (!target?.initialized) return null;
 
     try {
-      const result = await target.source.getSeries(seriesId);
+      const result = await target.source.getSeries(seriesId, undefined, page);
       const normalized = normalizeSeriesResult(
         result,
         seriesId,

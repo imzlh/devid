@@ -5,3 +5,4 @@ downloads/
 node_modules/
 config.json
 data/
+.deno/

@@ -19,6 +19,7 @@ import VideoGrid from "./components/VideoGrid.vue";
 import DownloadsPanel from "./components/DownloadsPanel.vue";
 import PlayerPanel from "./components/PlayerPanel.vue";
 import SeriesPanel from "./components/SeriesPanel.vue";
+import ShortVideoPanel from "./components/ShortVideoPanel.vue";
 import CaptchaDialog from "./components/CaptchaDialog.vue";
 import ToastViewport, { type ToastItem } from "./components/ToastViewport.vue";
 import {
@@ -92,6 +93,7 @@ const overlaySearchInput = ref<HTMLInputElement | null>(null);
 const searchOverlayOpen = ref(false);
 const selectedVideo = ref<VideoItem | null>(null);
 const selectedSeries = ref<VideoItem | null>(null);
+const selectedShortSeries = ref<VideoItem | null>(null);
 const captchaRequest = ref<CaptchaRequest | null>(null);
 const toasts = ref<ToastItem[]>([]);
 const downloadingItems = ref<Set<string>>(new Set());
@@ -114,6 +116,8 @@ let pageRequestId = 0;
 let toastId = 0;
 const toastTimers = new Set<ReturnType<typeof window.setTimeout>>();
 const scrollListenerOptions = { passive: true, capture: true } as const;
+const scrolledEnterThreshold = 28;
+const scrolledExitThreshold = 4;
 
 const activeSource = computed(() =>
   sources.value.find((source) =>
@@ -150,7 +154,9 @@ const taskActionLabel = computed(() =>
 const currentList = computed(() =>
   page.value === "recent" ? recentVideos.value : videos.value
 );
-const mediaModalOpen = computed(() => Boolean(selectedVideo.value || selectedSeries.value));
+const mediaModalOpen = computed(() =>
+  Boolean(selectedVideo.value || selectedSeries.value || selectedShortSeries.value)
+);
 const canLoadMoreVideos = computed(() =>
   (page.value === "home" || page.value === "search") &&
   videos.value.currentPage < videos.value.totalPages
@@ -460,7 +466,11 @@ function showSources() {
 }
 
 function opensSeriesPanel(video: VideoItem): boolean {
-  return video.contentType === "series" || video.contentType === "infinite";
+  return video.contentType === "series";
+}
+
+function opensShortVideoPanel(video: VideoItem): boolean {
+  return video.contentType === "infinite";
 }
 
 function nonEmptyText(value: unknown): string {
@@ -483,9 +493,16 @@ function playableVideoOrNull(video: VideoItem): VideoItem | null {
 }
 
 async function directDownload(video: VideoItem) {
+  if (opensShortVideoPanel(video)) {
+    selectedShortSeries.value = video;
+    selectedSeries.value = null;
+    selectedVideo.value = null;
+    return;
+  }
   if (opensSeriesPanel(video)) {
     selectedSeries.value = video;
     selectedVideo.value = null;
+    selectedShortSeries.value = null;
     return;
   }
   const playableVideo = playableVideoOrNull(video);
@@ -521,9 +538,17 @@ async function directDownload(video: VideoItem) {
 }
 
 function selectItem(video: VideoItem) {
+  if (opensShortVideoPanel(video)) {
+    selectedShortSeries.value = video;
+    selectedSeries.value = null;
+    selectedVideo.value = null;
+    return;
+  }
+
   if (opensSeriesPanel(video)) {
     selectedSeries.value = video;
     selectedVideo.value = null;
+    selectedShortSeries.value = null;
     return;
   }
 
@@ -536,6 +561,7 @@ function selectItem(video: VideoItem) {
 
   selectedVideo.value = playableVideo;
   selectedSeries.value = null;
+  selectedShortSeries.value = null;
 }
 
 function episodeAsVideo(episode: Episode, series: SeriesDetail): VideoItem | null {
@@ -693,6 +719,7 @@ async function switchSource(sourceId: string) {
     activeSourceId.value = sourceId;
     selectedVideo.value = null;
     selectedSeries.value = null;
+    selectedShortSeries.value = null;
     page.value = "home";
     const nextVideos = await getHomeVideos(1);
     if (requestId !== pageRequestId) return;
@@ -759,6 +786,7 @@ async function syncSourceState() {
       activeSourceId.value = nextActiveId;
       selectedVideo.value = null;
       selectedSeries.value = null;
+      selectedShortSeries.value = null;
       const ownSwitchInFlight = sourceActionKind.value === "switch" &&
         sourceActionId.value === nextActiveId;
       if (nextActiveId && !ownSwitchInFlight) {
@@ -792,6 +820,7 @@ function handlePlayerDownloaded() {
 function closeMedia() {
   selectedVideo.value = null;
   selectedSeries.value = null;
+  selectedShortSeries.value = null;
 }
 
 async function openSearchOverlay() {
@@ -816,7 +845,11 @@ function handleScroll() {
     document.documentElement.scrollTop || 0,
     document.body.scrollTop || 0,
   );
-  isScrolled.value = scrollTop > 12;
+  const nextScrolled = isScrolled.value
+    ? scrollTop > scrolledExitThreshold
+    : scrollTop > scrolledEnterThreshold;
+  if (nextScrolled === isScrolled.value) return;
+  isScrolled.value = nextScrolled;
   document.documentElement.dataset.scrolled = isScrolled.value ? "true" : "false";
 }
 
@@ -871,6 +904,10 @@ function handleGlobalKeydown(event: KeyboardEvent) {
       return;
     }
     if (selectedSeries.value) {
+      closeMedia();
+      return;
+    }
+    if (selectedShortSeries.value) {
       closeMedia();
     }
   }
@@ -1267,8 +1304,15 @@ watch(
       class="media-modal-backdrop"
       @click.self="closeMedia"
     >
+      <ShortVideoPanel
+        v-if="selectedShortSeries"
+        :series="selectedShortSeries"
+        @close="selectedShortSeries = null"
+        @downloaded="handlePlayerDownloaded"
+      />
+
       <SeriesPanel
-        v-if="selectedSeries && !selectedVideo"
+        v-else-if="selectedSeries && !selectedVideo"
         :series="selectedSeries"
         :downloading-many="seriesBatchDownloading"
         @close="selectedSeries = null"

@@ -5,7 +5,7 @@ import {
 } from "../types/index.ts";
 import { logDebug, logError, logInfo, logWarn } from "./logger.ts";
 import { getConfig } from "../config/index.ts";
-import { inferMediaFormat, isPlayableMediaUrl } from "./media-format.ts";
+import { inferMediaFormat } from "./media-format.ts";
 import { validateUrl } from "./validation.ts";
 import { basename, extname, join, normalize } from "node:path";
 import { mergeReadableStreams } from "@std/streams";
@@ -270,9 +270,6 @@ export class DownloadManager {
       throw new Error(`无效的下载URL: ${url}`);
     }
     const normalizedUrl = new URL(url.trim()).href;
-    if (!isPlayableMediaUrl(normalizedUrl, media?.format)) {
-      throw new Error(`下载URL不是直连媒体地址: ${url}`);
-    }
     const normalizedReferer = normalizeOptionalHttpUrl(referer);
 
     const normalizedTitle = nonEmptyStringOr(title, "未命名下载");
@@ -1119,10 +1116,6 @@ export class DownloadManager {
         continue;
       }
       const normalizedUrl = new URL(rawUrl.trim()).href;
-      if (!isPlayableMediaUrl(normalizedUrl, taskLike.format)) {
-        logWarn(`跳过非直连媒体下载任务: ${taskId}`);
-        continue;
-      }
       const persistedStatus = DOWNLOAD_STATUSES.has(
           taskLike.status as IDownloadTask["status"],
         )
