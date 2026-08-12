@@ -19,6 +19,18 @@ export type RpcClientMessage =
     data: unknown;
   };
 
+function randomUUID() {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+  }
+}
+
 export function normalizeRpcClientMessage(
   data: string,
 ): RpcClientMessage | null {
@@ -149,7 +161,7 @@ export class RpcClient {
       return Promise.reject(new Error("WebSocket is not connected"));
     }
 
-    const id = crypto.randomUUID();
+    const id = randomUUID();
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
     try {
       const payload = JSON.stringify({ id, method, params });
